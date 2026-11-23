@@ -135,20 +135,16 @@ def popen(args, **kw):
 def run(tool, *args, input=None, cwd=None, timeout=60):
     """Runs one of the built programs and returns Result. Arguments are passed as given."""
     command = [str(BUILD / f"{tool}.exe"), *map(str, args)]
-    for attempt in range(8):
-        proc = popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
-        try:
-            out, err = proc.communicate(input=input, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            kill_tree(proc)
-            proc.communicate()
-            raise
-        # WSL sometimes fails to start a Windows program at all (UtilAcceptVsock); the program never ran.
-        if ON_WSL and (b"UtilAcceptVsock" in err or b"UtilAcceptVsock" in out):
-            time.sleep(0.5)
-            continue
-        return Result(proc.returncode, out, err)
-    raise RuntimeError("WSL could not start the program after 8 tries")
+    proc = popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    try:
+        out, err = proc.communicate(input=input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_tree(proc)
+        proc.communicate()
+        raise
+    if ON_WSL and (b"UtilAcceptVsock" in err or b"UtilAcceptVsock" in out):
+        raise RuntimeError("WSL could not start the program: see vm.min_free_kbytes in the Impossible SDK README")
+    return Result(proc.returncode, out, err)
 
 
 class WorkDir(unittest.TestCase):
