@@ -1,6 +1,8 @@
 # Command
 
-A family of small console tools for Windows and, later, Impossible OS, built on Impossible SDK. Each tool is one executable with no C runtime that calls only the tier 0 Windows functions. Status: first version of five tools.
+<a href="https://github.com/rizonesoft/ImpossibleSDK"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/rizonesoft/ImpossibleSDK/main/brand/badge-dark.png"><img alt="Built with Impossible SDK" src="https://raw.githubusercontent.com/rizonesoft/ImpossibleSDK/main/brand/badge-light.png" height="34"></picture></a>
+
+A family of small console tools for Windows and, later, [Impossible OS](https://github.com/rizonesoft/impossible-os), built on [Impossible SDK](https://github.com/rizonesoft/ImpossibleSDK). Each tool is one executable with no C runtime that calls only the tier 0 Windows functions. Status: first version of five tools.
 
 | Tool | What it does |
 | --- | --- |
