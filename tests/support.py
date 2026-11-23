@@ -19,7 +19,7 @@ needs_windows = unittest.skipUnless(RUNNABLE, "the programs are Windows executab
 # Locks, junctions, sparse files and long paths are Windows' own file system, which WSL's disk is not.
 needs_windows_files = unittest.skipUnless(ON_NT, "needs Windows' own file system: python3 ../ImpossibleSDK/tools/prove.py .")
 
-WORK_ROOT = BUILD / "test-work"
+WORK_ROOT = Path(tempfile.gettempdir()) / f"command-test-work-{os.getpid()}"  # on Windows a Windows disk
 _wsl_paths = {}
 
 
