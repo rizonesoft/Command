@@ -22,7 +22,7 @@ static void usage(void) {
         "Usage: tfind [OPTION]... TEXT [PATH]...\n"
         "\n"
         "Prints the lines that contain TEXT, as \"path:line:text\". A PATH that is a folder is searched\n"
-        "in full, folders inside it too, except symbolic links and junctions, which are not entered.\n"
+        "in full, folders inside it too, except symbolic links and junctions, which are not entered (also when named as a PATH).\n"
         "With no PATH, or a PATH of -, standard input is searched.\n"
         "\n"
         "  -i, --ignore-case     A to Z match a to z (ASCII only)\n"
@@ -106,6 +106,13 @@ static void search_reader(reader *r, const wchar_t *name) {
         if (!reader_read(r, buf + len, buf_cap - len, &got)) return read_error(name, r);
         if (!got) eof = true;
         len += got;
+        /* The binary and UTF-16 tests look at the first 64 KiB, so wait for that much (or the end): a
+           pipe may hand over a few bytes at a time. */
+        while (first && !eof && len < FIRST_LOOK) {
+            if (!reader_read(r, buf + len, FIRST_LOOK - len, &got)) return read_error(name, r);
+            if (!got) eof = true;
+            len += got;
+        }
         if (first && len) {
             first = false;
             if (len >= 2 && ((buf[0] == 0xFF && buf[1] == 0xFE) || (buf[0] == 0xFE && buf[1] == 0xFF))) {
@@ -139,7 +146,7 @@ static void search_reader(reader *r, const wchar_t *name) {
             for (size_t i = start; i < len; i++) buf[i - start] = buf[i];
             len -= start, scanned -= start, start = 0;
         } else if (len == buf_cap && !eof) {
-            if (buf_cap >= MAX_LINE) {
+            if (buf_cap > MAX_LINE) { /* MAX_LINE bytes of line plus room to see the newline or the end */
                 char text[64] = "line ";
                 size_t n = 5 + format_u64(number + 1, text + 5);
                 for (const char *p = " is longer than 64 MiB"; *p; p++) text[n++] = *p;
@@ -148,9 +155,10 @@ static void search_reader(reader *r, const wchar_t *name) {
                 had_error = true;
                 return;
             }
-            unsigned char *grown = tk_realloc(buf, buf_cap * 2);
+            size_t bigger = buf_cap * 2 > MAX_LINE + 1 ? MAX_LINE + 1 : buf_cap * 2;
+            unsigned char *grown = tk_realloc(buf, bigger);
             if (!grown) return err_text(TOOL, name, "out of memory"), (void)(had_error = true);
-            buf = grown, buf_cap *= 2;
+            buf = grown, buf_cap = bigger;
         }
     }
 }
@@ -266,7 +274,10 @@ int im_main(void) {
         DWORD error;
         DWORD attrs = fs_attributes(p, &error);
         if (attrs == INVALID_FILE_ATTRIBUTES) err_win(TOOL, p, NULL, error), had_error = true;
-        else if (attrs & FILE_ATTRIBUTE_DIRECTORY) search_folder(p);
+        else if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+            DWORD tag;
+            if (!fs_path_is_link(p, &tag)) search_folder(p); /* a link is skipped, as it is inside a folder */
+        }
         else search_file(p);
     }
     return finish(TOOL, had_error || tk_out.failed ? TK_ERROR : found ? TK_OK : TK_NO);

@@ -138,6 +138,11 @@ static int reverse(reader *r, const wchar_t *name, stream *dest) {
             count++, s += 2;
         }
         if (result) break;
+        if (count > UINT64_MAX - offset) {
+            line_error(name, li.number, "the offsets run past the largest 64-bit number");
+            result = TK_ERROR;
+            break;
+        }
         first = false, expected = offset + count;
         if (dest->failed) break;
     }
@@ -205,18 +210,40 @@ int im_main(void) {
         reader_close(&r);
         return finish(TOOL, result);
     }
-    /* To a file: write beside it, then rename over it once everything is down. */
+    /* To a file: write beside it under a name nobody else has, then rename over the destination once
+       everything is down. The temporary file is created new, so this run only ever deletes its own. */
     wbuf temp = {0};
-    if (!wbuf_set(&temp, output) || !wbuf_add(&temp, L".thex-tmp", 9)) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
+    HANDLE h = INVALID_HANDLE_VALUE;
+    DWORD error = 0;
+    for (unsigned attempt = 0; attempt < 100 && h == INVALID_HANDLE_VALUE; attempt++) {
+        LARGE_INTEGER tick;
+        QueryPerformanceCounter(&tick);
+        char tag[40] = ".thex-";
+        uint64_t unique = (uint64_t)tick.QuadPart * 0x9E3779B97F4A7C15ull + attempt;
+        static const char digits[] = "0123456789abcdef";
+        for (int i = 0; i < 16; i++) tag[6 + i] = digits[unique >> (60 - 4 * i) & 15];
+        tag[22] = '.', tag[23] = 't', tag[24] = 'm', tag[25] = 'p', tag[26] = 0;
+        wchar_t wtag[40];
+        for (int i = 0; i < 27; i++) wtag[i] = (wchar_t)tag[i];
+        if (!wbuf_set(&temp, output) || !wbuf_add(&temp, wtag, 26)) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
+        wchar_t *native = fs_native(temp.s);
+        if (!native) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
+        h = CreateFileW(native, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        tk_free(native);
+        if (h == INVALID_HANDLE_VALUE) {
+            error = GetLastError();
+            if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) break;
+        }
+    }
+    if (h == INVALID_HANDLE_VALUE) return err_win(TOOL, output, "cannot create the output", error), TK_ERROR;
     wchar_t *temp_native = fs_native(temp.s), *out_native = fs_native(output);
-    HANDLE h = temp_native ? CreateFileW(temp_native, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL) : INVALID_HANDLE_VALUE;
-    if (h == INVALID_HANDLE_VALUE) return err_win(TOOL, output, "cannot create the output", GetLastError()), TK_ERROR;
+    if (!temp_native || !out_native) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
     static stream file;
     out_attach(&file, h);
     result = reverse(&r, input, &file);
     reader_close(&r);
     bool written = out_flush(&file);
-    DWORD error = file.error;
+    error = file.error;
     if (!CloseHandle(h) && written) written = false, error = GetLastError();
     if (!written) err_win(TOOL, output, "cannot write the output", error), result = TK_ERROR;
     if (result == TK_OK && !MoveFileExW(temp_native, out_native, MOVEFILE_REPLACE_EXISTING)) {

@@ -255,6 +255,23 @@ void dir_free(dirlist *list) {
     *list = (dirlist){0};
 }
 
+bool fs_path_is_link(const wchar_t *path, DWORD *tag) {
+    size_t n = tk_wlen(path);
+    while (n > 3 && (path[n - 1] == L'\\' || path[n - 1] == L'/')) n--; /* FindFirstFile does not take a trailing slash */
+    wbuf b = {0};
+    if (!wbuf_add(&b, path, n)) return wbuf_free(&b), false;
+    wchar_t *native = fs_native(b.s);
+    wbuf_free(&b);
+    if (!native) return false;
+    WIN32_FIND_DATAW d;
+    HANDLE h = FindFirstFileW(native, &d);
+    tk_free(native);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    FindClose(h);
+    *tag = d.dwReserved0;
+    return (d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && IS_LINK_TAG(d.dwReserved0);
+}
+
 const char *reparse_kind(DWORD tag) {
     if (tag == 0xA000000C) return "symlink";
     if (tag == 0xA0000003) return "junction";

@@ -64,6 +64,8 @@ static const size_t BUFFER = (size_t)1 << 20;
 /* Hashes everything the reader holds. On a read error the path, offset and Windows error are reported. */
 static bool hash_reader(reader *r, const wchar_t *name, unsigned mask, void *buf, digests *d) {
     hasher h;
+    uint64_t size_before = 0;
+    bool sized = reader_size(r, &size_before);
     hasher_start(&h, mask);
     for (;;) {
         size_t got;
@@ -73,6 +75,11 @@ static bool hash_reader(reader *r, const wchar_t *name, unsigned mask, void *buf
         }
         if (!got) break;
         hasher_feed(&h, buf, got);
+    }
+    uint64_t size_after;
+    if (sized && (!reader_size(r, &size_after) || size_after != size_before || r->offset != size_before)) {
+        err_text(TOOL, name, "the file changed while it was being read");
+        return false;
     }
     hasher_end(&h, d);
     return true;
@@ -205,6 +212,9 @@ static int check(const wchar_t *list_path, unsigned plain_mask, bool quiet, void
     liner li;
     liner_start(&li, &lr);
     uint64_t ok = 0, mismatched = 0, unreadable = 0, malformed = 0;
+    bool list_is_stdin = list_path[0] == L'-' && !list_path[1];
+    int stdin_state = 0; /* 0 not read yet, 1 read, 2 failed */
+    digests stdin_digests;
     const char *view;
     size_t len;
     int rc;
@@ -212,7 +222,8 @@ static int check(const wchar_t *list_path, unsigned plain_mask, bool quiet, void
         char *line = (char *)view;
         listed item;
         if (!len || line[0] == '#') continue;
-        if (!parse_check_line(line, len, plain_mask, &item)) {
+        /* A NUL would cut the name short and check a different file than the one listed. */
+        if (tk_slen(line) != len || !parse_check_line(line, len, plain_mask, &item)) {
             out_flush(&tk_out);
             out_str(&tk_err, TOOL ": "), out_wide(&tk_err, list_path), out_str(&tk_err, ": line ");
             out_u64(&tk_err, li.number), out_str(&tk_err, ": improperly formatted checksum line\n");
@@ -225,13 +236,24 @@ static int check(const wchar_t *list_path, unsigned plain_mask, bool quiet, void
         bool good = false, readable = false;
         if (wname) {
             utf8_to_utf16(item.name, tk_slen(item.name), wname, false);
-            reader fr;
-            if (open_source(&fr, wname)) {
-                digests d;
-                readable = hash_reader(&fr, wname, ALGO[item.algo].bit, buf, &d);
-                good = readable && equal(d.bytes[item.algo], item.want, ALGO[item.algo].len);
-                reader_close(&fr);
+            digests d = {0};
+            bool is_stdin = wname[0] == L'-' && !wname[1];
+            if (is_stdin && list_is_stdin) {
+                err_text(TOOL, wname, "standard input is the list, so it cannot also be a file to check");
+            } else if (is_stdin && stdin_state) {
+                /* Standard input can be read once: every algorithm is computed on the first record that
+                   names it, and the others use that. */
+                if (stdin_state == 1) readable = true, d = stdin_digests;
+            } else {
+                reader fr;
+                unsigned mask = is_stdin ? ALL : ALGO[item.algo].bit;
+                if (open_source(&fr, wname)) {
+                    readable = hash_reader(&fr, wname, mask, buf, &d);
+                    reader_close(&fr);
+                    if (is_stdin) stdin_state = readable ? 1 : 2, stdin_digests = d;
+                }
             }
+            good = readable && equal(d.bytes[item.algo], item.want, ALGO[item.algo].len);
         } else {
             err_text8(TOOL, item.name, "the name in the list is not valid UTF-8");
         }

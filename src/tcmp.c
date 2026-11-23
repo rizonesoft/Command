@@ -65,7 +65,7 @@ static void run_line(uint64_t start, uint64_t length) {
 /* Compares two open files. False after reporting a read error. */
 static bool compare_streams(reader *a, reader *b, const wchar_t *na, const wchar_t *nb, bool first_only, result *res) {
     *res = (result){0};
-    if (!reader_size(a, &res->size_a) || !reader_size(b, &res->size_b)) res->size_a = res->size_b = 0;
+    if (!reader_size(a, &res->size_a) || !reader_size(b, &res->size_b)) return err_win(TOOL, na, "cannot get the size", GetLastError()), false;
     uint64_t base = 0, run_start = 0, run_len = 0;
     for (;;) {
         size_t ga, gb;
@@ -96,6 +96,14 @@ static bool compare_streams(reader *a, reader *b, const wchar_t *na, const wchar
         }
         base += n;
         if (ga != gb || !ga) break;
+    }
+    /* Whatever ended the loop, the files must still be what they were when opened and every byte of each
+       must have been seen: otherwise something wrote to them and no answer can be trusted. */
+    uint64_t now_a, now_b;
+    if (!reader_size(a, &now_a) || !reader_size(b, &now_b)) return err_win(TOOL, na, "cannot get the size", GetLastError()), false;
+    if (now_a != res->size_a || now_b != res->size_b || a->offset != res->size_a || b->offset != res->size_b) {
+        err_text(TOOL, now_a != res->size_a || a->offset != res->size_a ? na : nb, "the file changed while it was being compared");
+        return false;
     }
     if (run_len) run_line(run_start, run_len);
     if (res->size_a != res->size_b) res->differ = true;
@@ -166,7 +174,22 @@ static bool push(frame **frames, size_t *count, size_t *cap, const wchar_t *pa, 
     return true;
 }
 
+static void print_summary(void) {
+    if (quiet) return;
+    out_u64(&tk_out, same), out_str(&tk_out, " same, "), out_u64(&tk_out, different), out_str(&tk_out, " different, ");
+    out_u64(&tk_out, only_a), out_str(&tk_out, " only in the first, "), out_u64(&tk_out, only_b), out_str(&tk_out, " only in the second");
+    if (skipped) out_str(&tk_out, ", "), out_u64(&tk_out, skipped), out_str(&tk_out, " skipped");
+    out_char(&tk_out, '\n');
+}
+
 static int compare_two_folders(const wchar_t *root_a, const wchar_t *root_b) {
+    DWORD tag;
+    if (fs_path_is_link(root_a, &tag) || fs_path_is_link(root_b, &tag)) { /* as for a link found inside a folder */
+        skipped++;
+        say("skipped:        ", fs_path_is_link(root_a, &tag) ? root_a : root_b, " (symbolic link or junction, not entered)");
+        print_summary();
+        return TK_NO;
+    }
     wbuf pa = {0}, pb = {0}, rel = {0};
     frame *frames = NULL;
     size_t count = 0, cap = 0;
@@ -204,7 +227,8 @@ static int compare_two_folders(const wchar_t *root_a, const wchar_t *root_b) {
             } else if (da != db) {
                 different++;
                 say("different:      ", rel.s, da ? " (a folder in the first, a file in the second)" : " (a file in the first, a folder in the second)");
-            } else if (ea->size != eb->size) {
+            } else if (!(ea->attrs & FILE_ATTRIBUTE_REPARSE_POINT) && !(eb->attrs & FILE_ATTRIBUTE_REPARSE_POINT) && ea->size != eb->size) {
+                /* Not for reparse points: a link lists its own size, but reading it gives its target's. */
                 different++;
                 say("different:      ", rel.s, " (size)");
             } else {
@@ -228,12 +252,7 @@ static int compare_two_folders(const wchar_t *root_a, const wchar_t *root_b) {
     for (size_t i = 0; i < count; i++) dir_free(&frames[i].a), dir_free(&frames[i].b);
     tk_free(frames), wbuf_free(&pa), wbuf_free(&pb), wbuf_free(&rel);
     if (!ok) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
-    if (!quiet) {
-        out_u64(&tk_out, same), out_str(&tk_out, " same, "), out_u64(&tk_out, different), out_str(&tk_out, " different, ");
-        out_u64(&tk_out, only_a), out_str(&tk_out, " only in the first, "), out_u64(&tk_out, only_b), out_str(&tk_out, " only in the second");
-        if (skipped) out_str(&tk_out, ", "), out_u64(&tk_out, skipped), out_str(&tk_out, " skipped");
-        out_char(&tk_out, '\n');
-    }
+    print_summary();
     if (had_error) return TK_ERROR;
     return different || only_a || only_b || skipped ? TK_NO : TK_OK;
 }

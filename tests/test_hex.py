@@ -1,9 +1,10 @@
 """thex: the dump format, exact round trips, offsets and lengths, errors."""
 import os
 import random
+import shutil
 import unittest
 
-from support import BUILD, Holder, WorkDir, kill_tree, make_sparse, needs_windows, popen
+from support import Holder, WorkDir, kill_tree, make_sparse, needs_windows, popen, private_program
 import subprocess
 import time
 
@@ -157,18 +158,53 @@ class Reverse(WorkDir):
 
     def test_killed_run_leaves_the_destination_alone(self):
         self.write("out.bin", b"keep me")
-        proc = popen([str(BUILD / "thex.exe"), "-r", "-o", "out.bin"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        exe, folder = private_program("thex")
+        if folder:
+            self.addCleanup(shutil.rmtree, folder, True)
+        proc = popen([str(exe), "-r", "-o", "out.bin"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                      stderr=subprocess.PIPE, cwd=self.dir)
         proc.stdin.write(b"00000000  01 02 03\n")
         proc.stdin.flush()
-        time.sleep(2)
+        deadline = time.time() + 20  # wait until the run has made its temporary file: it is then mid-run
+        while time.time() < deadline and len(list(self.dir.iterdir())) < 2:
+            time.sleep(0.1)
+        self.assertEqual(len(list(self.dir.iterdir())), 2, "the run never created its temporary file")
         kill_tree(proc)  # like Ctrl+C: nothing gets to clean up
         for stream in (proc.stdin, proc.stdout, proc.stderr):
             try:
                 stream.close()
             except OSError:
                 pass
-        self.assertEqual(self.path("out.bin").read_bytes(), b"keep me")  # a leftover out.bin.thex-tmp is expected
+        self.assertEqual(self.path("out.bin").read_bytes(), b"keep me")  # its own leftover temporary file is expected
+
+    def test_a_temporary_name_that_exists_is_never_touched(self):
+        self.write("out.bin", b"keep me")
+        self.write("out.bin.thex-tmp", b"somebody else's file")
+        for dump, code in (("00000000  01 02\n", 0), ("00000000  zz\n", 2)):
+            self.write("d.txt", dump)
+            self.assertEqual(self.tool("thex", "-r", "-o", "out.bin", "d.txt").code, code)
+            self.assertEqual(self.path("out.bin.thex-tmp").read_bytes(), b"somebody else's file")
+        self.assertEqual(self.path("out.bin").read_bytes(), b"\x01\x02")
+
+    def test_a_temporary_name_that_is_a_hard_link_to_the_destination_is_never_touched(self):
+        self.write("out.bin", b"keep me")
+        try:
+            os.link(self.path("out.bin"), self.path("out.bin.thex-tmp"))
+        except (OSError, NotImplementedError):
+            self.skipTest("this volume has no hard links")
+        self.write("d.txt", "00000000  zz\n")
+        self.assertEqual(self.tool("thex", "-r", "-o", "out.bin", "d.txt").code, 2)
+        self.assertEqual(self.path("out.bin").read_bytes(), b"keep me")
+
+    def test_offsets_that_wrap_around_are_an_error(self):
+        self.write("d.txt", "ffffffffffffffff  41\n00000000  42\n")
+        result = self.tool("thex", "-r", "d.txt")
+        self.assertEqual(result.code, 2)
+        self.assertIn("line 1", result.errtext)
+        self.write("d.txt", "fffffffffffffffe  41 42\n")
+        self.assertEqual(self.tool("thex", "-r", "d.txt").code, 2)
+        self.write("d.txt", "fffffffffffffffe  41\n")
+        self.assertEqual(self.tool("thex", "-r", "d.txt").out, b"A")
 
     def test_offset_only_final_line_is_accepted(self):
         self.write("d.txt", "00000000  61 62 |ab|\n00000002\n")

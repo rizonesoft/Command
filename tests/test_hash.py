@@ -1,12 +1,14 @@
 """thash: published vectors, random data against hashlib and zlib, check mode, errors."""
 import hashlib
 import os
+import shutil
+import subprocess
 import random
 import unittest
 import zlib
 
 from blake3_ref import blake3
-from support import ON_WSL, Holder, WorkDir, make_sparse, needs_windows, run, win
+from support import Holder, WorkDir, make_sparse, needs_windows, popen, private_program, run, win
 
 SHA256 = {
     b"": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -253,6 +255,45 @@ class HashBehaviour(WorkDir):
         self.assertEqual(result.out, b"")
         self.assertIn("(error 33)", result.errtext)
         self.assertRegex(result.errtext, r"read failed in the block at offset \d+")
+
+    def test_a_nul_in_a_list_line_is_an_error_not_a_shorter_name(self):
+        self.write("a", b"x")
+        digest = hashlib.sha256(b"x").hexdigest()
+        self.write("l.txt", digest.encode() + b"  a\x00different\n")
+        result = self.tool("thash", "-c", "l.txt")
+        self.assertEqual(result.code, 2)
+        self.assertNotIn("a: OK", result.text)
+        self.assertIn("line 1: improperly formatted", result.errtext)
+
+    def test_a_tagged_list_for_standard_input_checks_every_record(self):
+        listing = self.tool("thash", "-a", "sha256,md5,crc32", input=b"abc").out
+        self.write("l.txt", listing)
+        result = self.tool("thash", "-c", "l.txt", input=b"abc")
+        self.assertEqual((result.code, result.text), (0, "-: OK\n-: OK\n-: OK\n"), result.errtext)
+        wrong = self.tool("thash", "-c", "l.txt", input=b"abd")
+        self.assertEqual(wrong.code, 1)
+        self.assertEqual(wrong.text.count("FAILED"), 3)
+        both = self.tool("thash", "-c", "-", input=listing)
+        self.assertEqual(both.code, 2)  # standard input cannot be the list and the data
+
+    def test_a_file_that_changes_while_it_is_hashed_is_an_error(self):
+        size = (8 << 30) + 4096
+        path = make_sparse(self.path("big.bin"), size)
+        if path is None:
+            self.skipTest("this volume cannot make sparse files")
+        holder = Holder(path, "ReadWrite", then=f"$f.SetLength({size // 2})", delay=0.5)
+        try:
+            tool = private_program("thash")
+            proc = popen([str(tool[0]), "-a", "crc32", "big.bin"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=self.dir)
+            holder.trigger()
+            out, err = proc.communicate(timeout=300)
+        finally:
+            holder.close()
+            if tool[1]:
+                shutil.rmtree(tool[1], ignore_errors=True)
+        self.assertEqual(proc.returncode, 2, out)
+        self.assertEqual(out, b"")
+        self.assertIn(b"changed while it was being read", err)
 
     def test_options(self):
         for flag in ("--help", "-h"):

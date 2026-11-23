@@ -1,7 +1,7 @@
 """ttree: layout, sizes, totals, depth limit, reparse points, deep folders, errors."""
 import unittest
 
-from support import (WorkDir, make_deep, make_junction, make_sparse, needs_windows, remove_junction, win)
+from support import (WorkDir, make_deep, make_junction, make_sparse, make_symlink, needs_windows, remove_junction, win)
 
 
 @needs_windows
@@ -90,6 +90,22 @@ class Tree(WorkDir):
         result = self.tool("ttree", "-b", "--ascii", "top")
         self.assertEqual(result.code, 0, result.errtext)
         self.assertEqual(result.text, "top  5\n+-- link\\  [junction]\n\\-- own.txt  5\n\n0 folders, 1 file, 5 in total\n")
+
+    def test_a_junction_given_as_the_path_is_listed_not_entered(self):
+        self.write("real/f.txt", b"x" * 5)
+        if not make_junction(self.path("link"), self.path("real")):
+            self.skipTest("could not create a junction here")
+        self.addCleanup(remove_junction, self.path("link"))
+        result = self.tool("ttree", "-b", "link")
+        self.assertEqual((result.code, result.text), (0, "link  [junction]\n\n0 folders, 0 files, 0 in total\n"))
+        self.assertEqual(self.tool("ttree", "-b", "link\\").text, result.text.replace("link  ", "link\\  "))
+
+    def test_a_file_link_is_listed_and_the_summary_does_not_count_it(self):
+        self.write("r/real.txt", b"12345")
+        if not make_symlink(self.path("r", "alias.txt"), self.path("r", "real.txt")):
+            self.skipTest("this account cannot make symbolic links")
+        result = self.tool("ttree", "-b", "--ascii", "r")
+        self.assertEqual(result.text, "r  5\n+-- alias.txt  [symlink]\n\\-- real.txt  5\n\n0 folders, 1 file, 5 in total\n")
 
     def test_deep_folders_do_not_overflow_the_stack(self):
         bottom = make_deep(self.path("deep"), 1500)

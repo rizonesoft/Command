@@ -1,8 +1,12 @@
 """tfind: matches, exit codes, binary files, big lines and files, folders, errors."""
 import os
+import shutil
+import subprocess
+import time
 import unittest
 
-from support import (Holder, WorkDir, make_deep, make_junction, make_sparse, needs_windows, remove_junction, win)
+from support import (Holder, WorkDir, kill_tree, make_deep, make_junction, make_sparse, needs_windows, popen,
+                     private_program, remove_junction, win)
 
 
 @needs_windows
@@ -156,7 +160,58 @@ class Find(WorkDir):
         self.addCleanup(remove_junction, self.path("holder", "link"))
         result = self.tool("tfind", "needle", "holder")
         self.assertEqual((result.code, result.out), (1, b""))
-        self.assertEqual(self.tool("tfind", "needle", "holder\\link").code, 0)  # named on the command line: searched
+        named = self.tool("tfind", "needle", "holder\\link")  # named on the command line: the same, not entered
+        self.assertEqual((named.code, named.out), (1, b""))
+
+    def test_a_line_of_exactly_the_limit_is_searched(self):
+        limit = 64 << 20
+        for tail in (b"", b"\n"):
+            self.write("edge.txt", b"a" * limit + tail)
+            result = self.tool("tfind", "-l", "a", "edge.txt", timeout=120)
+            self.assertEqual((result.code, result.text), (0, "edge.txt\n"), (tail, result.errtext))
+        self.write("over.txt", b"a" * (limit + 1) + b"\n")
+        result = self.tool("tfind", "-l", "a", "over.txt", timeout=120)
+        self.assertEqual(result.code, 2)
+        self.assertIn("longer than 64 MiB", result.errtext)
+
+    def piped(self, pieces):
+        """Starts tfind on a pipe and sends the pieces with a pause between them; every wait is bounded."""
+        exe, folder = private_program("tfind")
+        proc = popen([str(exe), "needle"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            for piece in pieces:
+                proc.stdin.write(piece)
+                proc.stdin.flush()
+                time.sleep(1)
+            proc.stdin.close()
+            out, err = proc.stdout.read(), proc.stderr.read()
+            proc.wait(timeout=60)
+        finally:
+            kill_tree(proc)
+            if folder:
+                shutil.rmtree(folder, ignore_errors=True)
+        return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+    def test_binary_detection_waits_for_the_first_64_kib_across_short_reads(self):
+        code, out, err = self.piped([b"needle\n", b"more text\n", b"\x00 binary after two short reads\n"])
+        self.assertEqual((code, out), (0, "(stdin): binary file matches\n"), err)
+
+    def test_a_utf16_mark_split_across_short_reads_is_still_detected(self):
+        code, out, err = self.piped([b"\xff", b"\xfen\x00e\x00e\x00d\x00l\x00e\x00"])
+        self.assertEqual(code, 2)
+        self.assertIn("UTF-16", err)
+
+    def test_matches_before_a_read_error_stay_printed_and_the_error_is_reported(self):
+        body = b"hit\n" + b"x" * ((1 << 20) + 100000)
+        p = self.write("half.txt", body)
+        holder = Holder(p, "ReadWrite", lock=(1 << 20, 1000))
+        try:
+            result = self.tool("tfind", "hit", "half.txt")
+        finally:
+            holder.close()
+        self.assertEqual(result.code, 2)
+        self.assertEqual(result.text, "half.txt:1:hit\n")
+        self.assertIn("(error 33)", result.errtext)
 
     def test_read_error_mid_file_is_an_error(self):
         p = self.write("half.txt", ("line of text\n" * 30000).encode())

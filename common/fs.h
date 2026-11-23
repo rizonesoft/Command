@@ -56,8 +56,15 @@ typedef struct {
 } dirlist;
 
 #define ENTRY_IS_DIR(e) (((e)->attrs & FILE_ATTRIBUTE_DIRECTORY) != 0)
-/* A folder that is a symbolic link or junction: listed, never entered. */
-#define ENTRY_IS_DIR_LINK(e) (ENTRY_IS_DIR(e) && ((e)->attrs & FILE_ATTRIBUTE_REPARSE_POINT))
+/* Only symbolic links and junctions are links. Other reparse points (deduplicated or cloud files,
+   for example) are ordinary files and folders with their real size. */
+#define IS_LINK_TAG(tag) ((tag) == 0xA000000C || (tag) == 0xA0000003)
+#define ENTRY_IS_LINK(e) ((((e)->attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) && IS_LINK_TAG((e)->reparse_tag))
+#define ENTRY_IS_DIR_LINK(e) (ENTRY_IS_DIR(e) && ENTRY_IS_LINK(e))
+
+/* True when path itself is a symbolic link or junction (the same test as for a listed entry); *tag gets its
+   reparse tag. A path that cannot be queried is not a link. */
+bool fs_path_is_link(const wchar_t *path, DWORD *tag);
 
 /* Lists a folder, sorted by name, without "." and "..". False with *error set. */
 bool dir_read(const wchar_t *path, dirlist *list, DWORD *error);

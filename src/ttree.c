@@ -31,7 +31,7 @@ static void usage(void) {
         "\n"
         "Prints PATH (default: the current folder) as a tree. Every file and folder shows its size; a\n"
         "folder's size is everything inside it, including what -d leaves out of the listing.\n"
-        "Symbolic links and junctions are listed, marked, and never entered or counted.\n"
+        "Symbolic links and junctions, also when given as PATH, are listed, marked, and never entered or counted.\n"
         "\n"
         "  -d, --depth N   list at most N levels below PATH (0 prints only PATH); totals still cover all\n"
         "  -b, --bytes     exact sizes in bytes instead of KiB, MiB and so on\n"
@@ -78,14 +78,14 @@ typedef struct {
 static uint64_t folders, files;
 
 /* Walks root and appends nodes. False on out of memory. */
-static bool walk(const wchar_t *root, uint64_t *grand_total, size_t limit) {
+static bool walk(const wchar_t *root, uint64_t *grand_total, size_t limit, bool root_is_link, DWORD root_tag) {
     wbuf path = {0};
     frame *frames = NULL;
     size_t count = 0, cap = 0;
     bool ok = wbuf_set(&path, root);
     size_t root_node = SIZE_MAX;
-    ok = ok && add_node(root, KIND_DIR, 0, 0, 0, &root_node);
-    bool entering = ok;
+    ok = ok && add_node(root, root_is_link ? KIND_DIR_LINK : KIND_DIR, 0, 0, root_is_link ? root_tag : 0, &root_node);
+    bool entering = ok && !root_is_link; /* a link given as the path is treated like a link found inside a folder */
     size_t enter_node = root_node;
     uint32_t enter_depth = 0;
     while (ok) {
@@ -123,7 +123,7 @@ static bool walk(const wchar_t *root, uint64_t *grand_total, size_t limit) {
         const entry *e = &f->list.items[f->next++];
         uint32_t depth = f->depth + 1;
         bool shown = depth <= limit && (!dirs_only || ENTRY_IS_DIR(e));
-        bool is_dir = ENTRY_IS_DIR(e), is_link = (e->attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+        bool is_dir = ENTRY_IS_DIR(e), is_link = ENTRY_IS_LINK(e);
         uint8_t kind = is_dir ? (is_link ? KIND_DIR_LINK : KIND_DIR) : (is_link ? KIND_LINK : KIND_FILE);
         size_t index = SIZE_MAX;
         if (shown) {
@@ -136,8 +136,7 @@ static bool walk(const wchar_t *root, uint64_t *grand_total, size_t limit) {
             if (!wbuf_join(&path, e->name)) { ok = false; break; }
             entering = true, enter_node = index, enter_depth = depth;
         } else if (!is_dir) {
-            files++;
-            if (!is_link) f->total += e->size;
+            if (!is_link) files++, f->total += e->size; /* a file link is listed but not counted */
         }
     }
     for (size_t i = 0; i < count; i++) dir_free(&frames[i].list);
@@ -230,7 +229,9 @@ int im_main(void) {
         }
         node_count = pool_len = 0, folders = files = 0;
         uint64_t total = 0;
-        if (!walk(roots[i], &total, limit > 0xFFFFFFF0u ? 0xFFFFFFF0u : (size_t)limit) || !print_tree())
+        DWORD tag = 0;
+        bool link = fs_path_is_link(roots[i], &tag);
+        if (!walk(roots[i], &total, limit > 0xFFFFFFF0u ? 0xFFFFFFF0u : (size_t)limit, link, tag) || !print_tree())
             return err_text(TOOL, roots[i], "out of memory"), TK_ERROR;
         out_char(&tk_out, '\n');
         count_line(folders, "folder", "folders"), out_str(&tk_out, ", ");

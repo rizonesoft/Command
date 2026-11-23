@@ -1,8 +1,11 @@
 """tcmp: two files, two folders, big files, deep folders, errors."""
 import os
+import shutil
+import subprocess
 import unittest
 
-from support import (Holder, WorkDir, make_deep, make_junction, make_sparse, needs_windows, remove_junction, win)
+from support import (Holder, WorkDir, make_deep, make_junction, make_sparse, make_symlink, needs_windows, popen,
+                     private_program, remove_junction, win)
 
 
 @needs_windows
@@ -120,6 +123,24 @@ class CompareFiles(WorkDir):
         self.assertEqual(diff.code, 1)
         self.assertEqual(diff.text, f"differ at offset {size - 99} (0x{size - 99:x}): 0x61 vs 0x41\n")
 
+    def test_a_file_that_shrinks_while_compared_is_an_error_never_identical(self):
+        size = (8 << 30) + 4096
+        make_sparse(self.path("a.bin"), size) or self.skipTest("this volume cannot make sparse files")
+        b = make_sparse(self.path("b.bin"), size)
+        holder = Holder(b, "ReadWrite", then=f"$f.SetLength({size // 2})", delay=0.5)
+        exe, folder = private_program("tcmp")
+        try:
+            proc = popen([str(exe), "a.bin", "b.bin"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=self.dir)
+            holder.trigger()
+            out, err = proc.communicate(timeout=300)
+        finally:
+            holder.close()
+            if folder:
+                shutil.rmtree(folder, ignore_errors=True)
+        self.assertEqual(proc.returncode, 2, out)
+        self.assertNotIn(b"identical", out)
+        self.assertIn(b"changed while it was being compared", err)
+
     def test_options(self):
         self.assertIn("Usage: tcmp", self.tool("tcmp", "--help").text)
         self.assertEqual(self.tool("tcmp", "--version").text, "tcmp (Command) 0.1.0\n")
@@ -201,6 +222,28 @@ class CompareFolders(WorkDir):
         self.assertEqual(result.code, 1)
         self.assertIn("skipped:        link", result.text)
         self.assertIn("1 skipped", result.text)
+
+    def test_a_junction_given_as_a_folder_is_skipped_like_one_inside(self):
+        self.path("real").mkdir()
+        self.path("plain").mkdir()
+        if not make_junction(self.path("link"), self.path("real")):
+            self.skipTest("could not create a junction here")
+        self.addCleanup(remove_junction, self.path("link"))
+        result = self.tool("tcmp", "link", "plain")
+        self.assertEqual(result.code, 1)
+        self.assertEqual(result.text, "skipped:        link (symbolic link or junction, not entered)\n0 same, 0 different, 0 only in the first, 0 only in the second, 1 skipped\n")
+        self.assertEqual(self.tool("tcmp", "plain", "link").code, 1)
+
+    def test_a_file_link_is_compared_by_what_it_reads(self):
+        self.write("a/x", b"same bytes")
+        self.write("b/real", b"same bytes")
+        if not make_symlink(self.path("b", "x"), self.path("b", "real")):
+            self.skipTest("this account cannot make symbolic links")
+        self.path("b", "real").unlink()
+        self.write("b/real", b"same bytes")
+        result = self.tool("tcmp", "-v", "a", "b")
+        self.assertIn("same:           x\n", result.text)
+        self.assertNotIn("different:      x", result.text)
 
     def test_deep_folders_do_not_overflow_the_stack(self):
         for side in ("a", "b"):

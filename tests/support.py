@@ -1,10 +1,12 @@
 """Shared helpers: run the Windows programs from Windows or from WSL, with a timeout on every child."""
 import os
 import platform
+import queue
 import shutil
 import signal
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -36,8 +38,7 @@ def long_path(path):
 
 
 def kill_windows_program(exe):
-    """Stops every running copy of this exact executable. Through WSL, killing the Linux side of the
-    interop link does not stop the Windows program."""
+    """Stops the running programs whose executable is exactly this path (a private copy: see private_program)."""
     shell = powershell()
     if shell:
         script = f"Get-Process | Where-Object {{ $_.Path -eq '{win(exe)}' }} | Stop-Process -Force"
@@ -70,11 +71,40 @@ def kill_tree(proc):
 
 
 def remove_tree(path):
-    """Deletes a folder tree, however deep, without Python's recursion."""
-    if ON_NT:
-        subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", long_path(path)], capture_output=True, timeout=300)
+    """Deletes a folder tree, however deep, without Python's recursion, and fails if anything is left."""
+    if ON_NT:  # cmd's rmdir gives up on very deep trees: take the folders down one at a time, deepest first
+        folders, pending = [], [long_path(path)]
+        while pending:
+            here = pending.pop()
+            folders.append(here)
+            for entry in os.scandir(here):
+                if entry.is_dir(follow_symlinks=False) and not entry.is_junction():
+                    pending.append(entry.path)
+                else:
+                    try:
+                        os.unlink(entry.path)
+                    except OSError:
+                        os.rmdir(entry.path)  # a junction or folder link: the link goes, not its target
+        for folder in reversed(folders):
+            os.rmdir(folder)
     else:
         subprocess.run(["rm", "-rf", str(path)], capture_output=True, timeout=300)
+    if os.path.lexists(long_path(path)):
+        raise OSError(f"the test folder {path} could not be removed")
+
+
+def private_program(tool):
+    """The program to start. Through WSL, killing the Linux side of the interop link does not stop the
+    Windows program, so it runs from a copy in a folder of its own and that exact path is what gets
+    stopped: no other process can match it."""
+    exe = BUILD / f"{tool}.exe"
+    if not ON_WSL:
+        return exe, None
+    home = WORK_ROOT / "private"
+    home.mkdir(parents=True, exist_ok=True)
+    folder = Path(tempfile.mkdtemp(dir=home))
+    shutil.copy(exe, folder / exe.name)
+    return folder / exe.name, folder
 
 
 def cmd_exe():
@@ -84,6 +114,12 @@ def cmd_exe():
 def make_junction(link, target):
     """Makes a junction (no privilege needed); False when it could not."""
     done = subprocess.run([cmd_exe(), "/c", "mklink", "/J", win(link), win(target)], capture_output=True, timeout=60)
+    return done.returncode == 0
+
+
+def make_symlink(link, target):
+    """Makes a file symbolic link; False when this account may not (it needs Developer Mode or elevation)."""
+    done = subprocess.run([cmd_exe(), "/c", "mklink", win(link), win(target)], capture_output=True, timeout=60)
     return done.returncode == 0
 
 
@@ -134,17 +170,21 @@ def popen(args, **kw):
 
 def run(tool, *args, input=None, cwd=None, timeout=60):
     """Runs one of the built programs and returns Result. Arguments are passed as given."""
-    command = [str(BUILD / f"{tool}.exe"), *map(str, args)]
-    proc = popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+    exe, folder = private_program(tool)
     try:
-        out, err = proc.communicate(input=input, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        kill_tree(proc)
-        proc.communicate()
-        raise
-    if ON_WSL and (b"UtilAcceptVsock" in err or b"UtilAcceptVsock" in out):
-        raise RuntimeError("WSL could not start the program: see vm.min_free_kbytes in the Impossible SDK README")
-    return Result(proc.returncode, out, err)
+        proc = popen([str(exe), *map(str, args)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+        try:
+            out, err = proc.communicate(input=input, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            kill_tree(proc)
+            proc.communicate(timeout=30)
+            raise
+        if ON_WSL and (b"UtilAcceptVsock" in err or b"UtilAcceptVsock" in out):
+            raise RuntimeError("WSL could not start the program: see vm.min_free_kbytes in the Impossible SDK README")
+        return Result(proc.returncode, out, err)
+    finally:
+        if folder:
+            shutil.rmtree(folder, ignore_errors=True)
 
 
 class WorkDir(unittest.TestCase):
@@ -182,7 +222,9 @@ def make_sparse(path, size, writes=()):
     if done.returncode != 0:
         return None
     with open(path, "r+b") as f:
-        f.truncate(size)
+        # Not truncate(): on Windows Python writes the zeros. Writing the last byte of a sparse file leaves a hole.
+        f.seek(size - 1)
+        f.write(b"\0")
         for offset, data in writes:
             f.seek(offset)
             f.write(data)
@@ -198,27 +240,35 @@ def powershell():
 
 
 class Holder:
-    """A PowerShell child that keeps a file open (or a byte range of it locked) until closed."""
+    """A PowerShell child that keeps a file open (or a byte range of it locked) until closed.
 
-    def __init__(self, path, share, lock=None):
+    With `then`, it waits for trigger(), pauses `delay` seconds, then runs that PowerShell code on the open
+    file (as $f). Every wait is bounded."""
+
+    def __init__(self, path, share, lock=None, then=None, delay=0):
         shell = powershell()
         if not shell:
             raise unittest.SkipTest("PowerShell is not available to hold a file open")
         lock_cmd = f"$f.Lock({lock[0]},{lock[1]});" if lock else ""
+        act = f"[void][Console]::In.ReadLine();Start-Sleep -Milliseconds {int(delay * 1000)};{then};" if then else ""
         script = (f"$f=[IO.File]::Open('{win(path)}','Open','ReadWrite','{share}');{lock_cmd}"
-                  "[Console]::Out.WriteLine('READY');[Console]::Out.Flush();[void][Console]::In.ReadLine()")
+                  f"[Console]::Out.WriteLine('READY');[Console]::Out.Flush();{act}[void][Console]::In.ReadLine()")
         self.proc = popen([shell, "-NoProfile", "-Command", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True)
-        self.proc.exe = None  # the shell is shared with other work: it ends when its input does
-        deadline = time.time() + 60
-        line = ""
-        while time.time() < deadline:
-            line = self.proc.stdout.readline()
-            if line.strip() == "READY" or self.proc.poll() is not None:
-                break
+        self.proc.exe = None  # the shell is shared with other work: it ends when its input ends
+        lines = queue.Queue()
+        threading.Thread(target=lambda: lines.put(self.proc.stdout.readline()), daemon=True).start()
+        try:
+            line = lines.get(timeout=60)
+        except queue.Empty:
+            line = ""
         if line.strip() != "READY":
             self.close()
-            raise unittest.SkipTest("PowerShell could not hold the file open")
+            raise RuntimeError("PowerShell did not report that it holds the file")
+
+    def trigger(self):
+        self.proc.stdin.write("go\n")
+        self.proc.stdin.flush()
 
     def close(self):
         try:
@@ -228,4 +278,7 @@ class Holder:
             kill_tree(self.proc)
         for stream in (self.proc.stdout, self.proc.stderr):
             if stream:
-                stream.close()
+                try:
+                    stream.close()
+                except OSError:
+                    pass
