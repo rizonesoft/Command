@@ -1,8 +1,9 @@
 {
-  "title": "Implementation plan",
-  "acceptance": null,
+  "title": "Command implementation plan",
+  "acceptance": "Each tool of docs/tools.md behaves as Windows documents it, compared with the real one.",
   "phases": {
     "0": "Repository and tooling",
+    "1": "Tools",
     "99": "Manual, operator only"
   }
 }
