@@ -16,6 +16,8 @@ ON_NT = os.name == "nt"
 ON_WSL = not ON_NT and "microsoft" in platform.release().lower()
 RUNNABLE = ON_NT or ON_WSL
 needs_windows = unittest.skipUnless(RUNNABLE, "the programs are Windows executables: needs Windows, directly or through WSL")
+# Locks, junctions, sparse files and long paths are Windows' own file system, which WSL's disk is not.
+needs_windows_files = unittest.skipUnless(ON_NT, "needs Windows' own file system: python3 ../ImpossibleSDK/tools/prove.py .")
 
 WORK_ROOT = BUILD / "test-work"
 _wsl_paths = {}
@@ -221,6 +223,7 @@ def run(tool, *args, input=None, cwd=None, timeout=60):
         return child.finish(input, timeout)
 
 
+@needs_windows_files
 class WorkDir(unittest.TestCase):
     """A test case with a scratch folder under the build folder, which Windows can see."""
 

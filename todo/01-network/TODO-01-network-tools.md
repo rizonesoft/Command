@@ -56,7 +56,7 @@ title: "TODO-01 -- Network Tools"
 - [ ] Report each Windows network error in one line. Done when: an unknown name, no network and a refused address have their own text and exit code 1. Cheaper substitute: the number alone.
 - [ ] Commit: `command: network calls`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/app_build.py .` exits 0 and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 2. ping
 
@@ -76,7 +76,7 @@ Echo requests with the documented switches, statistics and Ctrl+C.
 - [ ] Refuse bad switches and values. Done when: each documented limit has a test. Cheaper substitute: clamping.
 - [ ] Commit: `command: ping`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/app_build.py .` exits 0 and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 3. tracert and pathping
 
@@ -96,7 +96,7 @@ The route to a host by rising hop limit, with names, then loss per hop.
 - [ ] Measure loss per hop in `src/pathping.c`. Done when: the statistics equal counts from the raw replies. Cheaper substitute: the route alone.
 - [ ] Commit: `command: tracert and pathping`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/app_build.py .` exits 0 and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 4. ipconfig, getmac and hostname
 
@@ -116,7 +116,7 @@ Adapters, addresses, gateways, name servers and leases.
 - [ ] Print addresses in `src/getmac.c` and the name in `src/hostname.c`. Done when: both equal Windows' tools. Cheaper substitute: the first adapter.
 - [ ] Commit: `command: ipconfig, getmac and hostname`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/app_build.py .` exits 0 and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 5. netstat, arp and route
 
@@ -136,7 +136,7 @@ Connections, listening ports, the neighbour table and the route table, read only
 - [ ] Refuse changes. Done when: `route add` exits 1 and says it is not made. Cheaper substitute: ignoring it.
 - [ ] Commit: `command: netstat, arp and route`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/app_build.py .` exits 0 and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 6. nslookup
 
@@ -156,7 +156,7 @@ Questions to a named server over UDP and TCP, with the common record types.
 - [ ] Print A, AAAA, MX, NS, TXT, CNAME, PTR and SOA. Done when: each has a recorded answer test. Cheaper substitute: A only.
 - [ ] Commit: `command: nslookup`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/app_build.py .` exits 0 and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## Verification
 

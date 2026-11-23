@@ -48,10 +48,10 @@
       "timeout_seconds": 60
     },
     {
-      "name": "build",
+      "name": "proof",
       "command": [
         "python3",
-        "../ImpossibleSDK/tools/app_build.py",
+        "../ImpossibleSDK/tools/prove.py",
         "."
       ],
       "timeout_seconds": 900
