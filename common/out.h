@@ -27,6 +27,8 @@ bool out_flush(stream *s);                          /* false when any write on s
 
 /* One line on standard error: "tool: path: action: message (error N)". path and action may be NULL. */
 void err_win(const char *tool, const wchar_t *path, const char *action, uint32_t code);
+/* A failed read: "tool: path: read failed in the block at offset N: message (error C)"; offset is where the failed read began. */
+void err_read(const char *tool, const wchar_t *path, uint64_t offset, uint32_t code);
 /* The same without a Windows error: "tool: path: text". */
 void err_text(const char *tool, const wchar_t *path, const char *text);
 /* Same, with a UTF-8 path. */

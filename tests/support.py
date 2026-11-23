@@ -35,10 +35,21 @@ def long_path(path):
     return "\\\\?\\" + path if ON_NT and not path.startswith("\\\\?\\") else path
 
 
+def kill_windows_program(exe):
+    """Stops every running copy of this exact executable. Through WSL, killing the Linux side of the
+    interop link does not stop the Windows program."""
+    shell = powershell()
+    if shell:
+        script = f"Get-Process | Where-Object {{ $_.Path -eq '{win(exe)}' }} | Stop-Process -Force"
+        subprocess.run([shell, "-NoProfile", "-Command", script], capture_output=True, timeout=60)
+
+
 def kill_tree(proc):
     """Stops a child and everything it started."""
     if proc.poll() is not None:
         return
+    if ON_WSL and getattr(proc, "exe", None):
+        kill_windows_program(proc.exe)
     if ON_NT:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True, timeout=30)
     else:
@@ -58,6 +69,48 @@ def kill_tree(proc):
         pass
 
 
+def remove_tree(path):
+    """Deletes a folder tree, however deep, without Python's recursion."""
+    if ON_NT:
+        subprocess.run(["cmd", "/c", "rmdir", "/s", "/q", long_path(path)], capture_output=True, timeout=300)
+    else:
+        subprocess.run(["rm", "-rf", str(path)], capture_output=True, timeout=300)
+
+
+def cmd_exe():
+    return "cmd" if ON_NT else "cmd.exe"
+
+
+def make_junction(link, target):
+    """Makes a junction (no privilege needed); False when it could not."""
+    done = subprocess.run([cmd_exe(), "/c", "mklink", "/J", win(link), win(target)], capture_output=True, timeout=60)
+    return done.returncode == 0
+
+
+def remove_junction(link):
+    subprocess.run([cmd_exe(), "/c", "rmdir", win(link)], capture_output=True, timeout=60)
+
+
+def make_deep(base, depth, name="a"):
+    """A chain of folders `depth` deep under base; returns the bottom folder."""
+    bottom = Path(base)
+    os.makedirs(long_path(bottom), exist_ok=True)
+    if ON_NT:
+        for _ in range(depth):
+            bottom = bottom / name
+            os.mkdir(long_path(bottom))
+    else:  # walk down by file descriptor, so every step is one short lookup instead of a thousand
+        fd = os.open(bottom, os.O_RDONLY | os.O_DIRECTORY)
+        for _ in range(depth):
+            os.mkdir(name, dir_fd=fd)
+            below = os.open(name, os.O_RDONLY | os.O_DIRECTORY, dir_fd=fd)
+            os.close(fd)
+            fd = below
+        os.close(fd)
+        bottom = bottom.joinpath(*([name] * depth))
+    return bottom
+
+
 class Result:
     def __init__(self, code, out, err):
         self.code, self.out, self.err = code, out, err
@@ -74,7 +127,9 @@ class Result:
 def popen(args, **kw):
     if not ON_NT:
         kw["start_new_session"] = True
-    return subprocess.Popen(args, **kw)
+    proc = subprocess.Popen(args, **kw)
+    proc.exe = args[0]
+    return proc
 
 
 def run(tool, *args, input=None, cwd=None, timeout=60):
@@ -102,7 +157,7 @@ class WorkDir(unittest.TestCase):
     def setUp(self):
         WORK_ROOT.mkdir(exist_ok=True)
         self.dir = Path(tempfile.mkdtemp(dir=WORK_ROOT))
-        self.addCleanup(shutil.rmtree, long_path(self.dir), True)
+        self.addCleanup(remove_tree, self.dir)
 
     def path(self, *names):
         return self.dir.joinpath(*names)
@@ -113,7 +168,7 @@ class WorkDir(unittest.TestCase):
         p.write_bytes(data if isinstance(data, bytes) else data.encode("utf-8"))
         return p
 
-    def run(self, tool, *args, **kw):
+    def tool(self, tool, *args, **kw):
         kw.setdefault("cwd", self.dir)
         return run(tool, *args, **kw)
 
@@ -121,6 +176,7 @@ class WorkDir(unittest.TestCase):
 def make_sparse(path, size, writes=()):
     """A sparse file of this size with some bytes written at offsets, or None when the volume cannot do it."""
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"")
     fsutil = "fsutil.exe" if ON_WSL else "fsutil"
     try:
@@ -154,8 +210,10 @@ class Holder:
             raise unittest.SkipTest("PowerShell is not available to hold a file open")
         lock_cmd = f"$f.Lock({lock[0]},{lock[1]});" if lock else ""
         script = (f"$f=[IO.File]::Open('{win(path)}','Open','ReadWrite','{share}');{lock_cmd}"
-                  "[Console]::Out.WriteLine('READY');[Console]::Out.Flush();Start-Sleep -Seconds 120")
-        self.proc = popen([shell, "-NoProfile", "-Command", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                  "[Console]::Out.WriteLine('READY');[Console]::Out.Flush();[void][Console]::In.ReadLine()")
+        self.proc = popen([shell, "-NoProfile", "-Command", script], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True)
+        self.proc.exe = None  # the shell is shared with other work: it ends when its input does
         deadline = time.time() + 60
         line = ""
         while time.time() < deadline:
@@ -167,7 +225,11 @@ class Holder:
             raise unittest.SkipTest("PowerShell could not hold the file open")
 
     def close(self):
-        kill_tree(self.proc)
+        try:
+            self.proc.stdin.close()  # the script ends, and the file is released, when its input ends
+            self.proc.wait(timeout=20)
+        except (OSError, subprocess.TimeoutExpired):
+            kill_tree(self.proc)
         for stream in (self.proc.stdout, self.proc.stderr):
             if stream:
                 stream.close()

@@ -170,6 +170,12 @@ void err_win(const char *tool, const wchar_t *path, const char *action, uint32_t
     out_flush(&tk_err);
 }
 
+void err_read(const char *tool, const wchar_t *path, uint64_t offset, uint32_t code) {
+    char action[64] = "read failed in the block at offset ";
+    format_u64(offset, action + 35);
+    err_win(tool, path, action, code);
+}
+
 void err_text(const char *tool, const wchar_t *path, const char *text) {
     line_start(tool, path, NULL);
     out_str(&tk_err, text);

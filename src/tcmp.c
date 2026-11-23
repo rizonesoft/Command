@@ -34,9 +34,7 @@ static bool fill(reader *r, const wchar_t *name, unsigned char *buf, size_t *got
     while (have < CHUNK) {
         size_t n;
         if (!reader_read(r, buf + have, CHUNK - have, &n)) {
-            char action[48] = "read failed at offset ";
-            format_u64(r->offset, action + 22);
-            err_win(TOOL, name, action, r->error);
+            err_read(TOOL, name, r->offset, r->error);
             return false;
         }
         if (!n) break;

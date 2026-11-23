@@ -71,9 +71,7 @@ static int dump(reader *r, const wchar_t *name, uint64_t skip, uint64_t length, 
         size_t want = left < cap ? (size_t)left : cap, got;
         if (!want) break;
         if (!reader_read(r, buf, want, &got)) {
-            char action[48] = "read failed at offset ";
-            format_u64(r->offset, action + 22);
-            return err_win(TOOL, name, action, r->error), TK_ERROR;
+            return err_read(TOOL, name, r->offset, r->error), TK_ERROR;
         }
         if (!got) break;
         left -= got;

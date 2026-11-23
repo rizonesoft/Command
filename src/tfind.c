@@ -66,9 +66,7 @@ static bool has_nul(const unsigned char *p, size_t n) {
 }
 
 static void read_error(const wchar_t *name, reader *r) {
-    char action[48] = "read failed at offset ";
-    format_u64(r->offset, action + 22);
-    err_win(TOOL, name, action, r->error);
+    err_read(TOOL, name, r->offset, r->error);
     had_error = true;
 }
 

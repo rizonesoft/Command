@@ -68,9 +68,7 @@ static bool hash_reader(reader *r, const wchar_t *name, unsigned mask, void *buf
     for (;;) {
         size_t got;
         if (!reader_read(r, buf, BUFFER, &got)) {
-            char action[48] = "read failed at offset ";
-            format_u64(r->offset, action + 22);
-            err_win(TOOL, name, action, r->error);
+            err_read(TOOL, name, r->offset, r->error);
             return false;
         }
         if (!got) break;
