@@ -38,10 +38,12 @@ def long_path(path):
 
 
 def kill_windows_program(exe):
-    """Stops the running programs whose executable is exactly this path (a private copy: see private_program)."""
+    """Stops the Windows processes started from this private copy of a program (see private_program): their
+    ids are looked up by the unique path, then each is stopped by its own id."""
     shell = powershell()
     if shell:
-        script = f"Get-Process | Where-Object {{ $_.Path -eq '{win(exe)}' }} | Stop-Process -Force"
+        script = (f"Get-Process | Where-Object {{ $_.Path -eq '{win(exe)}' }} | "
+                  "ForEach-Object { Stop-Process -Id $_.Id -Force }")
         subprocess.run([shell, "-NoProfile", "-Command", script], capture_output=True, timeout=60)
 
 
@@ -78,7 +80,7 @@ def remove_tree(path):
             here = pending.pop()
             folders.append(here)
             for entry in os.scandir(here):
-                if entry.is_dir(follow_symlinks=False) and not entry.is_junction():
+                if entry.is_dir(follow_symlinks=False) and not entry.stat(follow_symlinks=False).st_file_attributes & 0x400:  # not a reparse point
                     pending.append(entry.path)
                 else:
                     try:
@@ -168,23 +170,55 @@ def popen(args, **kw):
     return proc
 
 
-def run(tool, *args, input=None, cwd=None, timeout=60):
-    """Runs one of the built programs and returns Result. Arguments are passed as given."""
-    exe, folder = private_program(tool)
-    try:
-        proc = popen([str(exe), *map(str, args)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+class Child:
+    """One program run: started from a private copy, killed by its own id when it is not done in time, and
+    cleaned up on exit. Every wait takes a timeout. Use as a context manager."""
+
+    def __init__(self, tool, *args, cwd=None, stdin=subprocess.PIPE):
+        self.exe, self.folder = private_program(tool)
+        self.proc = popen([str(self.exe), *map(str, args)], stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=cwd)
+
+    def write(self, data):
+        self.proc.stdin.write(data)
+        self.proc.stdin.flush()
+
+    def finish(self, input=None, timeout=60):
+        """Waits for the program, reading both outputs while it runs. On timeout it is killed and this raises."""
         try:
-            out, err = proc.communicate(input=input, timeout=timeout)
+            out, err = self.proc.communicate(input=input, timeout=timeout)
         except subprocess.TimeoutExpired:
-            kill_tree(proc)
-            proc.communicate(timeout=30)
+            self.kill()
+            self.proc.communicate(timeout=30)
             raise
         if ON_WSL and (b"UtilAcceptVsock" in err or b"UtilAcceptVsock" in out):
             raise RuntimeError("WSL could not start the program: see vm.min_free_kbytes in the Impossible SDK README")
-        return Result(proc.returncode, out, err)
-    finally:
-        if folder:
-            shutil.rmtree(folder, ignore_errors=True)
+        return Result(self.proc.returncode, out, err)
+
+    def kill(self):
+        kill_tree(self.proc)
+
+    def close(self):
+        self.kill()
+        for stream in (self.proc.stdin, self.proc.stdout, self.proc.stderr):
+            try:
+                if stream:
+                    stream.close()
+            except OSError:
+                pass
+        if self.folder:
+            shutil.rmtree(self.folder, ignore_errors=True)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+
+
+def run(tool, *args, input=None, cwd=None, timeout=60):
+    """Runs one of the built programs and returns Result. Arguments are passed as given."""
+    with Child(tool, *args, cwd=cwd) as child:
+        return child.finish(input, timeout)
 
 
 class WorkDir(unittest.TestCase):
@@ -265,6 +299,12 @@ class Holder:
         if line.strip() != "READY":
             self.close()
             raise RuntimeError("PowerShell did not report that it holds the file")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
     def trigger(self):
         self.proc.stdin.write("go\n")

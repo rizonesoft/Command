@@ -1,11 +1,9 @@
 """tcmp: two files, two folders, big files, deep folders, errors."""
 import os
-import shutil
-import subprocess
 import unittest
 
-from support import (Holder, WorkDir, make_deep, make_junction, make_sparse, make_symlink, needs_windows, popen,
-                     private_program, remove_junction, win)
+from support import (Child, Holder, WorkDir, make_deep, make_junction, make_sparse, make_symlink, needs_windows,
+                     remove_junction, win)
 
 
 @needs_windows
@@ -127,19 +125,49 @@ class CompareFiles(WorkDir):
         size = (8 << 30) + 4096
         make_sparse(self.path("a.bin"), size) or self.skipTest("this volume cannot make sparse files")
         b = make_sparse(self.path("b.bin"), size)
-        holder = Holder(b, "ReadWrite", then=f"$f.SetLength({size // 2})", delay=0.5)
-        exe, folder = private_program("tcmp")
-        try:
-            proc = popen([str(exe), "a.bin", "b.bin"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=self.dir)
-            holder.trigger()
-            out, err = proc.communicate(timeout=300)
-        finally:
-            holder.close()
-            if folder:
-                shutil.rmtree(folder, ignore_errors=True)
-        self.assertEqual(proc.returncode, 2, out)
-        self.assertNotIn(b"identical", out)
-        self.assertIn(b"changed while it was being compared", err)
+        with Holder(b, "ReadWrite", then=f"$f.SetLength({size // 2})", delay=0.5) as holder:
+            with Child("tcmp", "a.bin", "b.bin", cwd=self.dir) as child:
+                holder.trigger()
+                result = child.finish(timeout=300)
+        self.assertEqual(result.code, 2, result.out)
+        self.assertNotIn(b"identical", result.out)
+        self.assertIn(b"changed while it was being read", result.err)
+
+    def test_a_change_is_an_error_even_when_a_difference_is_found_first(self):
+        size = (8 << 30) + 4096
+        a = make_sparse(self.path("a.bin"), size, [(5 << 30, b"x")])
+        a or self.skipTest("this volume cannot make sparse files")
+        b = make_sparse(self.path("b.bin"), size, [(5 << 30, b"y")])
+        with Holder(b, "ReadWrite", then=f"$f.SetLength({7 << 30})", delay=0.5) as holder:
+            with Child("tcmp", "a.bin", "b.bin", cwd=self.dir) as child:
+                holder.trigger()
+                result = child.finish(timeout=300)
+        self.assertEqual(result.code, 2, result.out)
+        self.assertIn(b"changed while it was being read", result.err)
+
+    def test_sizes_around_every_buffer_boundary(self):
+        mib = 1 << 20
+        sizes = [0, 1, mib - 1, mib, mib + 1, 2 * mib - 1, 2 * mib, 2 * mib + 1, 3 * mib + 7]
+        for first in sizes:
+            for second in sizes:
+                self.write("a", b"\x00" * first)
+                self.write("b", b"\x00" * second)
+                result = self.tool("tcmp", "a", "b")
+                label = (first, second, result.errtext)
+                if first == second:
+                    self.assertEqual((result.code, result.text), (0, "a and b are identical\n"), label)
+                else:
+                    self.assertEqual(result.code, 1, label)
+                    self.assertEqual(result.text, f"differ in size: a is {first} bytes, b is {second} bytes; the bytes they share are identical\n", label)
+        for size in sizes[1:]:  # equal sizes, one byte different at the first, last and middle positions
+            for at in {0, size - 1, size // 2}:
+                data = bytearray(size)
+                other = bytearray(data)
+                other[at] = 1
+                self.write("a", bytes(data))
+                self.write("b", bytes(other))
+                result = self.tool("tcmp", "a", "b")
+                self.assertEqual((result.code, result.text.split(":")[0]), (1, f"differ at offset {at} (0x{at:x})"), (size, at))
 
     def test_options(self):
         self.assertIn("Usage: tcmp", self.tool("tcmp", "--help").text)
@@ -233,6 +261,7 @@ class CompareFolders(WorkDir):
         self.assertEqual(result.code, 1)
         self.assertEqual(result.text, "skipped:        link (symbolic link or junction, not entered)\n0 same, 0 different, 0 only in the first, 0 only in the second, 1 skipped\n")
         self.assertEqual(self.tool("tcmp", "plain", "link").code, 1)
+        self.assertEqual(self.tool("tcmp", "link\\", "plain\\").code, 1)  # trailing slashes change nothing
 
     def test_a_file_link_is_compared_by_what_it_reads(self):
         self.write("a/x", b"same bytes")

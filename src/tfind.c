@@ -8,6 +8,7 @@
 #define TOOL "tfind"
 #define MAX_PATTERN 65536
 #define MAX_LINE ((size_t)64 << 20)
+#define BUF_LIMIT (MAX_LINE + 2) /* a full line, its CR LF, or one more byte to see the end of file */
 #define FIRST_LOOK 65536 /* a NUL in this much of the start makes a file binary */
 
 static unsigned char pattern[MAX_PATTERN];
@@ -97,6 +98,15 @@ static void search_binary(reader *r, const wchar_t *name, size_t len) {
     }
 }
 
+static void line_too_long(const wchar_t *name, uint64_t number) {
+    char text[64] = "line ";
+    size_t n = 5 + format_u64(number, text + 5);
+    for (const char *p = " is longer than 64 MiB"; *p; p++) text[n++] = *p;
+    text[n] = 0;
+    err_text(TOOL, name, text);
+    had_error = true;
+}
+
 static void search_reader(reader *r, const wchar_t *name) {
     size_t len = 0, start = 0, scanned = 0;
     uint64_t number = 0;
@@ -108,7 +118,7 @@ static void search_reader(reader *r, const wchar_t *name) {
         len += got;
         /* The binary and UTF-16 tests look at the first 64 KiB, so wait for that much (or the end): a
            pipe may hand over a few bytes at a time. */
-        while (first && !eof && len < FIRST_LOOK) {
+        while (first && !eof && len < FIRST_LOOK && !(quiet && len >= 2 && find(buf, len) != SIZE_MAX)) {
             if (!reader_read(r, buf + len, FIRST_LOOK - len, &got)) return read_error(name, r);
             if (!got) eof = true;
             len += got;
@@ -128,6 +138,7 @@ static void search_reader(reader *r, const wchar_t *name) {
             size_t end = i;
             if (end > start && buf[end - 1] == '\r') end--;
             number++;
+            if (end - start > MAX_LINE) return line_too_long(name, number);
             if (find(buf + start, end - start) != SIZE_MAX) {
                 /* A matching line holding a NUL is binary data: report it like a binary file. */
                 bool binary = has_nul(buf + start, end - start);
@@ -146,16 +157,8 @@ static void search_reader(reader *r, const wchar_t *name) {
             for (size_t i = start; i < len; i++) buf[i - start] = buf[i];
             len -= start, scanned -= start, start = 0;
         } else if (len == buf_cap && !eof) {
-            if (buf_cap > MAX_LINE) { /* MAX_LINE bytes of line plus room to see the newline or the end */
-                char text[64] = "line ";
-                size_t n = 5 + format_u64(number + 1, text + 5);
-                for (const char *p = " is longer than 64 MiB"; *p; p++) text[n++] = *p;
-                text[n] = 0;
-                err_text(TOOL, name, text);
-                had_error = true;
-                return;
-            }
-            size_t bigger = buf_cap * 2 > MAX_LINE + 1 ? MAX_LINE + 1 : buf_cap * 2;
+            if (buf_cap >= BUF_LIMIT) return line_too_long(name, number + 1);
+            size_t bigger = buf_cap * 2 > BUF_LIMIT ? BUF_LIMIT : buf_cap * 2;
             unsigned char *grown = tk_realloc(buf, bigger);
             if (!grown) return err_text(TOOL, name, "out of memory"), (void)(had_error = true);
             buf = grown, buf_cap = bigger;
@@ -263,6 +266,9 @@ int im_main(void) {
     if (!buf) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
 
     if (!npaths) paths[npaths++] = L"-";
+    size_t dashes = 0;
+    for (size_t i = 0; i < npaths; i++) dashes += paths[i][0] == L'-' && !paths[i][1];
+    if (dashes > 1) return err_text(TOOL, NULL, "standard input can be named only once (-)"), TK_ERROR;
     for (size_t i = 0; i < npaths && !stop; i++) {
         const wchar_t *p = paths[i];
         if (p[0] == L'-' && !p[1]) {
@@ -271,14 +277,11 @@ int im_main(void) {
             search_reader(&r, L"(stdin)");
             continue;
         }
-        DWORD error;
-        DWORD attrs = fs_attributes(p, &error);
-        if (attrs == INVALID_FILE_ATTRIBUTES) err_win(TOOL, p, NULL, error), had_error = true;
-        else if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
-            DWORD tag;
-            if (!fs_path_is_link(p, &tag)) search_folder(p); /* a link is skipped, as it is inside a folder */
-        }
-        else search_file(p);
+        pathinfo info;
+        if (!fs_classify(p, &info)) err_win(TOOL, p, NULL, info.error), had_error = true;
+        else if (info.is_dir) {
+            if (!info.is_link) search_folder(p); /* a link is skipped, as it is inside a folder */
+        } else search_file(p);
     }
     return finish(TOOL, had_error || tk_out.failed ? TK_ERROR : found ? TK_OK : TK_NO);
 }

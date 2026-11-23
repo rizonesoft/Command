@@ -1,14 +1,12 @@
 """thash: published vectors, random data against hashlib and zlib, check mode, errors."""
 import hashlib
 import os
-import shutil
-import subprocess
 import random
 import unittest
 import zlib
 
 from blake3_ref import blake3
-from support import Holder, WorkDir, make_sparse, needs_windows, popen, private_program, run, win
+from support import Child, Holder, WorkDir, make_sparse, needs_windows, run, win
 
 SHA256 = {
     b"": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -281,19 +279,39 @@ class HashBehaviour(WorkDir):
         path = make_sparse(self.path("big.bin"), size)
         if path is None:
             self.skipTest("this volume cannot make sparse files")
-        holder = Holder(path, "ReadWrite", then=f"$f.SetLength({size // 2})", delay=0.5)
-        try:
-            tool = private_program("thash")
-            proc = popen([str(tool[0]), "-a", "crc32", "big.bin"], stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=self.dir)
-            holder.trigger()
-            out, err = proc.communicate(timeout=300)
-        finally:
-            holder.close()
-            if tool[1]:
-                shutil.rmtree(tool[1], ignore_errors=True)
-        self.assertEqual(proc.returncode, 2, out)
-        self.assertEqual(out, b"")
-        self.assertIn(b"changed while it was being read", err)
+        with Holder(path, "ReadWrite", then=f"$f.SetLength({size // 2})", delay=0.5) as holder:
+            with Child("thash", "-a", "crc32", "big.bin", cwd=self.dir) as child:
+                holder.trigger()
+                result = child.finish(timeout=300)
+        self.assertEqual(result.code, 2, result.out)
+        self.assertEqual(result.out, b"")
+        self.assertIn(b"changed while it was being read", result.err)
+
+    def test_a_redirected_file_that_does_not_change_is_hashed(self):
+        data = os.urandom(3 * (1 << 20) + 5)
+        path = self.write("f.bin", data)
+        with open(path, "rb") as source:
+            with Child("thash", cwd=self.dir, stdin=source) as child:
+                result = child.finish(timeout=60)
+        self.assertEqual((result.code, result.text), (0, hashlib.sha256(data).hexdigest() + "  -\n"), result.errtext)
+
+    def test_sizes_around_every_buffer_boundary(self):
+        mib = 1 << 20
+        for size in (0, 1, mib - 1, mib, mib + 1, 2 * mib - 1, 2 * mib, 2 * mib + 1, 3 * mib + 7):
+            data = os.urandom(size)
+            self.write("f.bin", data)
+            result = self.tool("thash", "-a", "sha256,crc32", "f.bin")
+            self.assertEqual(result.code, 0, (size, result.errtext))
+            self.assertEqual(digest_of(result.text, "SHA256"), hashlib.sha256(data).hexdigest(), size)
+            self.assertEqual(digest_of(result.text, "CRC32"), f"{zlib.crc32(data):08x}", size)
+            piped = self.tool("thash", input=data)
+            self.assertEqual(piped.text.split()[0], hashlib.sha256(data).hexdigest(), size)
+
+    def test_standard_input_named_twice_is_refused(self):
+        result = self.tool("thash", "-", "-", input=b"data")
+        self.assertEqual(result.code, 2)
+        self.assertEqual(result.out, b"")
+        self.assertIn("only once", result.errtext)
 
     def test_options(self):
         for flag in ("--help", "-h"):

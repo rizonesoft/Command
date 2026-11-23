@@ -1,10 +1,9 @@
 """thex: the dump format, exact round trips, offsets and lengths, errors."""
 import os
 import random
-import shutil
 import unittest
 
-from support import Holder, WorkDir, kill_tree, make_sparse, needs_windows, popen, private_program
+from support import Child, Holder, WorkDir, make_sparse, needs_windows, win
 import subprocess
 import time
 
@@ -158,24 +157,22 @@ class Reverse(WorkDir):
 
     def test_killed_run_leaves_the_destination_alone(self):
         self.write("out.bin", b"keep me")
-        exe, folder = private_program("thex")
-        if folder:
-            self.addCleanup(shutil.rmtree, folder, True)
-        proc = popen([str(exe), "-r", "-o", "out.bin"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                     stderr=subprocess.PIPE, cwd=self.dir)
-        proc.stdin.write(b"00000000  01 02 03\n")
-        proc.stdin.flush()
-        deadline = time.time() + 20  # wait until the run has made its temporary file: it is then mid-run
-        while time.time() < deadline and len(list(self.dir.iterdir())) < 2:
-            time.sleep(0.1)
-        self.assertEqual(len(list(self.dir.iterdir())), 2, "the run never created its temporary file")
-        kill_tree(proc)  # like Ctrl+C: nothing gets to clean up
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            try:
-                stream.close()
-            except OSError:
-                pass
+        with Child("thex", "-r", "-o", "out.bin", cwd=self.dir) as child:
+            child.write(b"00000000  01 02 03\n")
+            deadline = time.time() + 20  # wait until the run has made its temporary file: it is then mid-run
+            while time.time() < deadline and len(list(self.dir.iterdir())) < 2:
+                time.sleep(0.1)
+            self.assertEqual(len(list(self.dir.iterdir())), 2, "the run never created its temporary file")
+            child.kill()  # like Ctrl+C: nothing gets to clean up
         self.assertEqual(self.path("out.bin").read_bytes(), b"keep me")  # its own leftover temporary file is expected
+
+    def test_a_long_output_name_still_gets_a_temporary_file(self):
+        name = "o" * 230 + ".bin"
+        self.write("d.txt", "00000000  01 02\n")
+        result = self.tool("thex", "-r", "-o", win(self.path(name)), "d.txt")  # absolute: relative paths stop at 260
+        self.assertEqual(result.code, 0, result.errtext)
+        self.assertEqual(self.path(name).read_bytes(), b"\x01\x02")
+        self.assertEqual(sorted(p.name for p in self.dir.iterdir()), sorted([name, "d.txt"]))
 
     def test_a_temporary_name_that_exists_is_never_touched(self):
         self.write("out.bin", b"keep me")

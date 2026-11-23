@@ -20,7 +20,7 @@ Clone Impossible SDK beside this folder at the commit in `sdk.json`, then run th
 python ../ImpossibleSDK/tools/app_build.py .
 ```
 
-The build runs the tests in `tests/` (Python `unittest`). They run the programs directly on Windows or through WSL interop, and create their scratch folders under the build folder.
+The build runs the tests in `tests/` (Python `unittest`; they need Python 3.12 or newer, as the SDK build does). They run the programs directly on Windows or through WSL interop, and create their scratch folders under the build folder.
 
 ## thash
 
@@ -31,7 +31,7 @@ thash -c LIST [-a blake3] [-q]
 
 With no FILE, or `-`, it reads standard input. `-a` takes a comma separated list of `sha256` (the default), `sha1`, `md5`, `crc32`, `blake3` or `all`; the data is read once however many are chosen. One algorithm prints `hash  name`; several, or `--tag`, print `SHA256 (name) = hash`.
 
-`-c LIST` reads such lines from the file LIST (`-` for standard input) and prints `name: OK`, `name: FAILED` or `name: FAILED open or read` for each. A plain 64 digit hash is read as SHA-256, or as BLAKE3 with `-a blake3`; the other lengths identify themselves. Names are relative to the current folder. `-q` prints only failures. Exit 0 all good, 1 a mismatch, 2 an unreadable file or a line that is not a checksum (a line with a NUL byte is not one). Standard input named in the list is read once, for every algorithm at the first record that names it. A file whose size changes, or that ends before its sampled size, while being read is an error in `thash` and `tcmp`.
+`-c LIST` reads such lines from the file LIST (`-` for standard input) and prints `name: OK`, `name: FAILED` or `name: FAILED open or read` for each. A plain 64 digit hash is read as SHA-256, or as BLAKE3 with `-a blake3`; the other lengths identify themselves. Names are relative to the current folder. `-q` prints only failures. Exit 0 all good, 1 a mismatch, 2 an unreadable file or a line that is not a checksum (a line with a NUL byte is not one). Standard input named in the list is read once, for every algorithm at the first record that names it. Standard input can be named only once on the command line (`thash - -` is an error). In every tool, a regular file named on the command line whose size changes while it is read is an error: the reader checks the size on every read and the byte count at the end. Standard input is not checked, because with tier 0 calls alone a pipe cannot be told from a redirected file (both answer `GetFileSizeEx` and `SetFilePointerEx` alike).
 
 ## thex
 
@@ -46,7 +46,7 @@ The dump is a hex offset (at least 8 digits), the bytes in groups of eight, and 
 00000000  48 65 6c 6c 6f 20 77 6f  72 6c 64 0a 00 01 02 03  |Hello world.....|
 ```
 
-Numbers may be decimal, `0x` hex, or end in `k`, `m`, `g` or `t` (powers of 1024). `-r` turns a dump back into the exact bytes: every line's offset must follow on from the line before (a dump of a range made with `-s` is fine), and the text column is ignored. With `-o`, the output is written to a new file named `OUTPUT.thex-<unique>.tmp` (created with CREATE_NEW, so an existing file is never touched, and only deleted by the run that made it) and renamed over `OUTPUT` only when the whole dump has been read and written, so a bad dump, an error or Ctrl+C never leaves a half written `OUTPUT` (Ctrl+C can leave that temporary file).
+Numbers may be decimal, `0x` hex, or end in `k`, `m`, `g` or `t` (powers of 1024). `-r` turns a dump back into the exact bytes: every line's offset must follow on from the line before (a dump of a range made with `-s` is fine), and the text column is ignored. With `-o`, the output is written to a new file named `.thex-<unique>` (a short name in the same folder, created with CREATE_NEW, so an existing file is never touched, and only deleted by the run that made it) and renamed over `OUTPUT` only when the whole dump has been read and written, so a bad dump, an error or Ctrl+C never leaves a half written `OUTPUT` (Ctrl+C can leave that temporary file).
 
 ## tfind
 

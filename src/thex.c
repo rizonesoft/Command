@@ -218,14 +218,19 @@ int im_main(void) {
     for (unsigned attempt = 0; attempt < 100 && h == INVALID_HANDLE_VALUE; attempt++) {
         LARGE_INTEGER tick;
         QueryPerformanceCounter(&tick);
-        char tag[40] = ".thex-";
+        /* The name does not depend on the output's own name, so it fits however long that is. It sits in the
+           same folder, so the rename at the end stays on one volume. */
+        char tag[24] = ".thex-";
         uint64_t unique = (uint64_t)tick.QuadPart * 0x9E3779B97F4A7C15ull + attempt;
         static const char digits[] = "0123456789abcdef";
         for (int i = 0; i < 16; i++) tag[6 + i] = digits[unique >> (60 - 4 * i) & 15];
-        tag[22] = '.', tag[23] = 't', tag[24] = 'm', tag[25] = 'p', tag[26] = 0;
-        wchar_t wtag[40];
-        for (int i = 0; i < 27; i++) wtag[i] = (wchar_t)tag[i];
-        if (!wbuf_set(&temp, output) || !wbuf_add(&temp, wtag, 26)) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
+        tag[22] = 0;
+        wchar_t wtag[24];
+        for (int i = 0; i < 23; i++) wtag[i] = (wchar_t)tag[i];
+        size_t dir_len = tk_wlen(output);
+        while (dir_len && output[dir_len - 1] != L'\\' && output[dir_len - 1] != L'/' && output[dir_len - 1] != L':') dir_len--;
+        temp.len = 0;
+        if (!wbuf_add(&temp, output, dir_len) || !wbuf_add(&temp, wtag, 22)) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
         wchar_t *native = fs_native(temp.s);
         if (!native) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;
         h = CreateFileW(native, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);

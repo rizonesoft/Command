@@ -100,6 +100,14 @@ class Tree(WorkDir):
         self.assertEqual((result.code, result.text), (0, "link  [junction]\n\n0 folders, 0 files, 0 in total\n"))
         self.assertEqual(self.tool("ttree", "-b", "link\\").text, result.text.replace("link  ", "link\\  "))
 
+    def test_a_file_link_given_as_the_path_is_marked_and_a_plain_file_is_not_a_folder(self):
+        self.write("real.txt", b"12345")
+        if not make_symlink(self.path("alias.txt"), self.path("real.txt")):
+            self.skipTest("this account cannot make symbolic links")
+        result = self.tool("ttree", "-b", "alias.txt")
+        self.assertEqual((result.code, result.text), (0, "alias.txt  [symlink]\n\n0 folders, 0 files, 0 in total\n"))
+        self.assertEqual(self.tool("ttree", "-b", "real.txt").code, 2)
+
     def test_a_file_link_is_listed_and_the_summary_does_not_count_it(self):
         self.write("r/real.txt", b"12345")
         if not make_symlink(self.path("r", "alias.txt"), self.path("r", "real.txt")):

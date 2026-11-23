@@ -104,6 +104,8 @@ bool reader_open(reader *r, const wchar_t *path) {
         return false;
     }
     r->h = h, r->seekable = true, r->owns = true;
+    LARGE_INTEGER size;
+    if (GetFileSizeEx(h, &size)) r->sized = true, r->size0 = (uint64_t)size.QuadPart;
     return true;
 }
 
@@ -113,6 +115,9 @@ void reader_stdin(reader *r) {
     r->h = GetStdHandle(STD_INPUT_HANDLE);
     if (!r->h || r->h == INVALID_HANDLE_VALUE) r->h = NULL, r->error = ERROR_INVALID_HANDLE;
     else r->console = GetConsoleMode(r->h, &mode) != 0;
+    /* Standard input is not watched for change: it may be a pipe, and with tier 0 alone a pipe answers
+       GetFileSizeEx and SetFilePointerEx like a file does (its size is the bytes waiting), so the two cannot
+       be told apart. */
 }
 
 void reader_close(reader *r) {
@@ -151,6 +156,17 @@ bool reader_read(reader *r, void *buf, size_t cap, size_t *got) {
         return r->error = e, false;
     }
     r->offset += n, *got = n;
+    if (r->sized && (!reader_check(r) || (!n && r->pos0 + r->offset != r->size0))) {
+        r->error = TK_ERR_CHANGED, *got = 0;
+        return false;
+    }
+    return true;
+}
+
+bool reader_check(reader *r) {
+    LARGE_INTEGER now;
+    if (!r->sized) return true;
+    if (!GetFileSizeEx(r->h, &now) || (uint64_t)now.QuadPart != r->size0) return r->error = TK_ERR_CHANGED, false;
     return true;
 }
 
@@ -175,7 +191,7 @@ bool reader_skip_to(reader *r, uint64_t offset) {
 
 bool reader_size(const reader *r, uint64_t *size) {
     LARGE_INTEGER s;
-    if (!r->seekable || !GetFileSizeEx(r->h, &s)) return false;
+    if (!r->sized || !GetFileSizeEx(r->h, &s)) return false;
     *size = (uint64_t)s.QuadPart;
     return true;
 }
@@ -255,21 +271,33 @@ void dir_free(dirlist *list) {
     *list = (dirlist){0};
 }
 
-bool fs_path_is_link(const wchar_t *path, DWORD *tag) {
+bool fs_classify(const wchar_t *path, pathinfo *info) {
+    *info = (pathinfo){0};
     size_t n = tk_wlen(path);
-    while (n > 3 && (path[n - 1] == L'\\' || path[n - 1] == L'/')) n--; /* FindFirstFile does not take a trailing slash */
+    /* Trailing slashes are dropped, but "C:\" keeps its one: "C:" alone means the current folder of drive C. */
+    while (n > 1 && (path[n - 1] == L'\\' || path[n - 1] == L'/') && !(n == 3 && path[1] == L':')) n--;
     wbuf b = {0};
-    if (!wbuf_add(&b, path, n)) return wbuf_free(&b), false;
+    if (!wbuf_add(&b, path, n)) return wbuf_free(&b), info->error = ERROR_NOT_ENOUGH_MEMORY, false;
     wchar_t *native = fs_native(b.s);
     wbuf_free(&b);
-    if (!native) return false;
+    if (!native) return info->error = ERROR_NOT_ENOUGH_MEMORY, false;
     WIN32_FIND_DATAW d;
     HANDLE h = FindFirstFileW(native, &d);
+    if (h != INVALID_HANDLE_VALUE) {
+        FindClose(h);
+        info->is_dir = (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+        info->is_link = (d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && IS_LINK_TAG(d.dwReserved0);
+        info->tag = (d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) ? d.dwReserved0 : 0;
+        info->size = (uint64_t)d.nFileSizeHigh << 32 | d.nFileSizeLow;
+        tk_free(native);
+        return true;
+    }
+    /* A drive or share root has no entry of its own to find; ask for its attributes instead. */
+    DWORD a = GetFileAttributesW(native);
+    if (a == INVALID_FILE_ATTRIBUTES) info->error = GetLastError();
+    else info->is_dir = (a & FILE_ATTRIBUTE_DIRECTORY) != 0;
     tk_free(native);
-    if (h == INVALID_HANDLE_VALUE) return false;
-    FindClose(h);
-    *tag = d.dwReserved0;
-    return (d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) && IS_LINK_TAG(d.dwReserved0);
+    return a != INVALID_FILE_ATTRIBUTES;
 }
 
 const char *reparse_kind(DWORD tag) {

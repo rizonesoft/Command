@@ -85,7 +85,12 @@ static bool compare_streams(reader *a, reader *b, const wchar_t *na, const wchar
             if (i >= n) break;
             if (buf_a[i] != buf_b[i]) {
                 if (!res->byte_differs) res->byte_differs = true, res->first = base + i, res->va = buf_a[i], res->vb = buf_b[i];
-                if (first_only) return res->differ = true;
+                if (first_only) {
+                    /* The reader has checked every read, but this answer stops early: check once more. */
+                    if (!reader_check(a)) return err_win(TOOL, na, NULL, a->error), false;
+                    if (!reader_check(b)) return err_win(TOOL, nb, NULL, b->error), false;
+                    return res->differ = true;
+                }
                 if (!run_len) run_start = base + i, res->runs++;
                 run_len++, res->bytes++;
             } else if (run_len) {
@@ -96,14 +101,6 @@ static bool compare_streams(reader *a, reader *b, const wchar_t *na, const wchar
         }
         base += n;
         if (ga != gb || !ga) break;
-    }
-    /* Whatever ended the loop, the files must still be what they were when opened and every byte of each
-       must have been seen: otherwise something wrote to them and no answer can be trusted. */
-    uint64_t now_a, now_b;
-    if (!reader_size(a, &now_a) || !reader_size(b, &now_b)) return err_win(TOOL, na, "cannot get the size", GetLastError()), false;
-    if (now_a != res->size_a || now_b != res->size_b || a->offset != res->size_a || b->offset != res->size_b) {
-        err_text(TOOL, now_a != res->size_a || a->offset != res->size_a ? na : nb, "the file changed while it was being compared");
-        return false;
     }
     if (run_len) run_line(run_start, run_len);
     if (res->size_a != res->size_b) res->differ = true;
@@ -183,10 +180,11 @@ static void print_summary(void) {
 }
 
 static int compare_two_folders(const wchar_t *root_a, const wchar_t *root_b) {
-    DWORD tag;
-    if (fs_path_is_link(root_a, &tag) || fs_path_is_link(root_b, &tag)) { /* as for a link found inside a folder */
+    pathinfo ia, ib;
+    fs_classify(root_a, &ia), fs_classify(root_b, &ib);
+    if (ia.is_link || ib.is_link) { /* as for a link found inside a folder */
         skipped++;
-        say("skipped:        ", fs_path_is_link(root_a, &tag) ? root_a : root_b, " (symbolic link or junction, not entered)");
+        say("skipped:        ", ia.is_link ? root_a : root_b, " (symbolic link or junction, not entered)");
         print_summary();
         return TK_NO;
     }
@@ -284,11 +282,10 @@ int im_main(void) {
         }
     }
     if (n != 2) return err_text(TOOL, NULL, "two files or two folders are needed (try --help)"), TK_ERROR;
-    DWORD ea = 0, eb = 0;
-    DWORD aa = fs_attributes(operand[0], &ea), ab = fs_attributes(operand[1], &eb);
-    if (aa == INVALID_FILE_ATTRIBUTES) return err_win(TOOL, operand[0], NULL, ea), finish(TOOL, TK_ERROR);
-    if (ab == INVALID_FILE_ATTRIBUTES) return err_win(TOOL, operand[1], NULL, eb), finish(TOOL, TK_ERROR);
-    bool da = aa & FILE_ATTRIBUTE_DIRECTORY, db = ab & FILE_ATTRIBUTE_DIRECTORY;
+    pathinfo pa, pb;
+    if (!fs_classify(operand[0], &pa)) return err_win(TOOL, operand[0], NULL, pa.error), finish(TOOL, TK_ERROR);
+    if (!fs_classify(operand[1], &pb)) return err_win(TOOL, operand[1], NULL, pb.error), finish(TOOL, TK_ERROR);
+    bool da = pa.is_dir, db = pb.is_dir;
     if (da != db) return err_text(TOOL, NULL, "cannot compare a file with a folder"), finish(TOOL, TK_ERROR);
     buf_a = tk_alloc(CHUNK), buf_b = tk_alloc(CHUNK);
     if (!buf_a || !buf_b) return err_text(TOOL, NULL, "out of memory"), TK_ERROR;

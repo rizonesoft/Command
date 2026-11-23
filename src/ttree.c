@@ -78,13 +78,13 @@ typedef struct {
 static uint64_t folders, files;
 
 /* Walks root and appends nodes. False on out of memory. */
-static bool walk(const wchar_t *root, uint64_t *grand_total, size_t limit, bool root_is_link, DWORD root_tag) {
+static bool walk(const wchar_t *root, uint64_t *grand_total, size_t limit, bool root_is_link, DWORD root_tag, bool root_is_dir) {
     wbuf path = {0};
     frame *frames = NULL;
     size_t count = 0, cap = 0;
     bool ok = wbuf_set(&path, root);
     size_t root_node = SIZE_MAX;
-    ok = ok && add_node(root, root_is_link ? KIND_DIR_LINK : KIND_DIR, 0, 0, root_is_link ? root_tag : 0, &root_node);
+    ok = ok && add_node(root, root_is_link ? (root_is_dir ? KIND_DIR_LINK : KIND_LINK) : KIND_DIR, 0, 0, root_is_link ? root_tag : 0, &root_node);
     bool entering = ok && !root_is_link; /* a link given as the path is treated like a link found inside a folder */
     size_t enter_node = root_node;
     uint32_t enter_depth = 0;
@@ -217,21 +217,18 @@ int im_main(void) {
     }
     if (!nroots) roots[nroots++] = L".";
     for (size_t i = 0; i < nroots && !tk_out.failed; i++) {
-        DWORD error;
-        DWORD attrs = fs_attributes(roots[i], &error);
-        if (attrs == INVALID_FILE_ATTRIBUTES) {
-            err_win(TOOL, roots[i], NULL, error), had_error = true;
+        pathinfo info;
+        if (!fs_classify(roots[i], &info)) {
+            err_win(TOOL, roots[i], NULL, info.error), had_error = true;
             continue;
         }
-        if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (!info.is_dir && !info.is_link) {
             err_text(TOOL, roots[i], "is not a folder"), had_error = true;
             continue;
         }
         node_count = pool_len = 0, folders = files = 0;
         uint64_t total = 0;
-        DWORD tag = 0;
-        bool link = fs_path_is_link(roots[i], &tag);
-        if (!walk(roots[i], &total, limit > 0xFFFFFFF0u ? 0xFFFFFFF0u : (size_t)limit, link, tag) || !print_tree())
+        if (!walk(roots[i], &total, limit > 0xFFFFFFF0u ? 0xFFFFFFF0u : (size_t)limit, info.is_link, info.tag, info.is_dir) || !print_tree())
             return err_text(TOOL, roots[i], "out of memory"), TK_ERROR;
         out_char(&tk_out, '\n');
         count_line(folders, "folder", "folders"), out_str(&tk_out, ", ");

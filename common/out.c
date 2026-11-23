@@ -162,6 +162,11 @@ static void line_start(const char *tool, const wchar_t *path, const char *utf8_p
 
 void err_win(const char *tool, const wchar_t *path, const char *action, uint32_t code) {
     line_start(tool, path, NULL);
+    if (code == 0x20000001u) { /* TK_ERR_CHANGED */
+        out_str(&tk_err, "the file changed while it was being read\n");
+        out_flush(&tk_err);
+        return;
+    }
     if (action) out_str(&tk_err, action), out_str(&tk_err, ": ");
     out_str(&tk_err, describe(code));
     out_str(&tk_err, " (error ");

@@ -28,6 +28,8 @@ DWORD fs_attributes(const wchar_t *path, DWORD *error);
 typedef struct {
     HANDLE h;
     bool console, seekable, owns;
+    bool sized;       /* a regular file: its size is watched for change */
+    uint64_t size0, pos0; /* the size when the reader started (pos0 is always 0 for a file opened here) */
     DWORD error;     /* of the last failed call */
     uint64_t offset; /* bytes handed out so far */
     char stage[16384];
@@ -42,6 +44,12 @@ bool reader_read(reader *r, void *buf, size_t cap, size_t *got);
 /* Moves forward to an absolute offset by seeking, or by reading when the source cannot seek. */
 bool reader_skip_to(reader *r, uint64_t offset);
 bool reader_size(const reader *r, uint64_t *size);
+/* Every successful reader_read on a regular file opened by reader_open (not standard input: see reader_stdin) checks that
+   the size is what it was at the start, and at the end of the file that exactly that many bytes came out.
+   Otherwise it fails with TK_ERR_CHANGED. A tool that stops reading early calls reader_check before it
+   trusts what it has seen. */
+#define TK_ERR_CHANGED 0x20000001u
+bool reader_check(reader *r);
 
 typedef struct {
     wchar_t *name;
@@ -62,9 +70,15 @@ typedef struct {
 #define ENTRY_IS_LINK(e) ((((e)->attrs & FILE_ATTRIBUTE_REPARSE_POINT) != 0) && IS_LINK_TAG((e)->reparse_tag))
 #define ENTRY_IS_DIR_LINK(e) (ENTRY_IS_DIR(e) && ENTRY_IS_LINK(e))
 
-/* True when path itself is a symbolic link or junction (the same test as for a listed entry); *tag gets its
-   reparse tag. A path that cannot be queried is not a link. */
-bool fs_path_is_link(const wchar_t *path, DWORD *tag);
+/* What an operand on the command line is. Trailing slashes are ignored, and the entry's own attributes are
+   used (a link is not looked through), the same as for an entry found in a folder listing. */
+typedef struct {
+    DWORD error;    /* 0 when the path exists */
+    bool is_dir, is_link;
+    DWORD tag;      /* the reparse tag of a link */
+    uint64_t size;
+} pathinfo;
+bool fs_classify(const wchar_t *path, pathinfo *info);
 
 /* Lists a folder, sorted by name, without "." and "..". False with *error set. */
 bool dir_read(const wchar_t *path, dirlist *list, DWORD *error);

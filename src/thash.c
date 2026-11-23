@@ -64,8 +64,6 @@ static const size_t BUFFER = (size_t)1 << 20;
 /* Hashes everything the reader holds. On a read error the path, offset and Windows error are reported. */
 static bool hash_reader(reader *r, const wchar_t *name, unsigned mask, void *buf, digests *d) {
     hasher h;
-    uint64_t size_before = 0;
-    bool sized = reader_size(r, &size_before);
     hasher_start(&h, mask);
     for (;;) {
         size_t got;
@@ -75,11 +73,6 @@ static bool hash_reader(reader *r, const wchar_t *name, unsigned mask, void *buf
         }
         if (!got) break;
         hasher_feed(&h, buf, got);
-    }
-    uint64_t size_after;
-    if (sized && (!reader_size(r, &size_after) || size_after != size_before || r->offset != size_before)) {
-        err_text(TOOL, name, "the file changed while it was being read");
-        return false;
     }
     hasher_end(&h, d);
     return true;
@@ -351,6 +344,9 @@ int im_main(void) {
         return finish(TOOL, check(list, algo_given && mask == BLAKE3 ? BLAKE3 : SHA256, quiet, buf));
     }
     if (quiet) return err_text(TOOL, NULL, "-q needs -c"), TK_ERROR;
+    size_t dashes = 0;
+    for (size_t i = 0; i < nfiles; i++) dashes += files[i][0] == L'-' && !files[i][1];
+    if (dashes > 1) return err_text(TOOL, NULL, "standard input can be named only once (-)"), TK_ERROR;
     bool tagged = tag || (mask & (mask - 1));
     static const wchar_t *const dash[] = {L"-"};
     const wchar_t *const *list_of = nfiles ? files : dash;

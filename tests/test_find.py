@@ -1,12 +1,10 @@
 """tfind: matches, exit codes, binary files, big lines and files, folders, errors."""
 import os
-import shutil
 import subprocess
 import time
 import unittest
 
-from support import (Holder, WorkDir, kill_tree, make_deep, make_junction, make_sparse, needs_windows, popen,
-                     private_program, remove_junction, win)
+from support import (Child, Holder, WorkDir, make_deep, make_junction, make_sparse, needs_windows, remove_junction, win)
 
 
 @needs_windows
@@ -169,28 +167,47 @@ class Find(WorkDir):
             self.write("edge.txt", b"a" * limit + tail)
             result = self.tool("tfind", "-l", "a", "edge.txt", timeout=120)
             self.assertEqual((result.code, result.text), (0, "edge.txt\n"), (tail, result.errtext))
+        self.write("crlf.txt", b"a" * limit + b"\r\n")  # the CR LF does not count as part of the line
+        crlf = self.tool("tfind", "-l", "a", "crlf.txt", timeout=120)
+        self.assertEqual((crlf.code, crlf.text), (0, "crlf.txt\n"), crlf.errtext)
         self.write("over.txt", b"a" * (limit + 1) + b"\n")
         result = self.tool("tfind", "-l", "a", "over.txt", timeout=120)
         self.assertEqual(result.code, 2)
         self.assertIn("longer than 64 MiB", result.errtext)
 
-    def piped(self, pieces):
+    def piped(self, pieces, *flags):
         """Starts tfind on a pipe and sends the pieces with a pause between them; every wait is bounded."""
-        exe, folder = private_program("tfind")
-        proc = popen([str(exe), "needle"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        try:
+        with Child("tfind", *flags, "needle", cwd=self.dir) as child:
             for piece in pieces:
-                proc.stdin.write(piece)
-                proc.stdin.flush()
+                child.write(piece)
                 time.sleep(1)
-            proc.stdin.close()
-            out, err = proc.stdout.read(), proc.stderr.read()
-            proc.wait(timeout=60)
-        finally:
-            kill_tree(proc)
-            if folder:
-                shutil.rmtree(folder, ignore_errors=True)
-        return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+            child.proc.stdin.close()
+            result = child.finish(timeout=60)
+        return result.code, result.text, result.errtext
+
+    def test_quiet_stops_at_a_match_without_waiting_for_the_rest_of_the_input(self):
+        with Child("tfind", "-q", "needle", cwd=self.dir) as child:
+            child.write(b"needle\n")  # the writer stays open: the answer must not wait for 64 KiB or the end
+            try:
+                code = child.proc.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                child.kill()
+                self.fail("tfind -q waited for more input after a conclusive match")
+        self.assertEqual(code, 0)
+
+    def test_the_same_standard_input_twice_is_refused(self):
+        result = self.tool("tfind", "x", "-", "-", input=b"x")
+        self.assertEqual(result.code, 2)
+        self.assertIn("only once", result.errtext)
+
+    def test_a_trailing_slash_does_not_enter_a_junction(self):
+        self.write("real/f.txt", "needle\n")
+        if not make_junction(self.path("j"), self.path("real")):
+            self.skipTest("could not create a junction here")
+        self.addCleanup(remove_junction, self.path("j"))
+        for operand in ("j", "j\\", "j/"):
+            result = self.tool("tfind", "needle", operand)
+            self.assertEqual((result.code, result.out), (1, b""), operand)
 
     def test_binary_detection_waits_for_the_first_64_kib_across_short_reads(self):
         code, out, err = self.piped([b"needle\n", b"more text\n", b"\x00 binary after two short reads\n"])
