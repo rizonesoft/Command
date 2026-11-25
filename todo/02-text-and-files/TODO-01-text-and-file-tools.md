@@ -56,7 +56,7 @@ Literal and simple pattern search with the documented switches, on the shared re
 - [ ] State each place where findstr's own behaviour is a known fault and what is done instead. Done when: `docs/findstr.md` lists them with tests. Cheaper substitute: silence.
 - [ ] Commit: `command: find and findstr`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../SDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 2. sort, more and clip
 
@@ -76,7 +76,7 @@ Sorting by column and locale rules, paging and the clipboard.
 - [ ] Send text in `src/clip.c` with the right encoding. Done when: text with emoji comes back equal. Cheaper substitute: the local code page.
 - [ ] Commit: `command: sort, more and clip`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../SDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 3. fc, comp and where
 
@@ -96,7 +96,7 @@ Comparing files as text and bytes, and finding programs on the path.
 - [ ] Search the path and patterns in `src/where.c`. Done when: results equal Windows' tool in order. Cheaper substitute: the first hit.
 - [ ] Commit: `command: fc, comp and where`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../SDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 4. tree, attrib and xcopy
 
@@ -116,7 +116,7 @@ The folder drawing, file attributes and copying folders.
 - [ ] Copy folders in `src/xcopy.c` so that a file is complete or absent. Done when: killing it at any moment leaves no half file. Cheaper substitute: writing in place.
 - [ ] Commit: `command: tree, attrib and xcopy`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../SDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## 5. robocopy
 
@@ -136,7 +136,7 @@ Mirroring and copying with retry, filters, logging and a dry run. Deleting is on
 - [ ] Give robocopy's own exit codes and summary. Done when: each code has a case. Cheaper substitute: 0 and 1.
 - [ ] Commit: `command: robocopy`
 
-**Test checkpoint:** `python3 ../ImpossibleSDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
+**Test checkpoint:** `python3 ../SDK/tools/prove.py .` exits 0 after the commit (the file tests run on Windows only) and the new tests fail when their production change is reverted.
 
 ## Verification
 

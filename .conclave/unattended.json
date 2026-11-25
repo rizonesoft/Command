@@ -51,7 +51,7 @@
       "name": "proof",
       "command": [
         "python3",
-        "../ImpossibleSDK/tools/prove.py",
+        "../SDK/tools/prove.py",
         "."
       ],
       "timeout_seconds": 900

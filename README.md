@@ -19,7 +19,7 @@ Every tool takes `--help` and `--version`. Exit codes are the same everywhere: 0
 Clone Impossible SDK beside this folder at the commit in `sdk.json`, then run this in Windows or WSL:
 
 ```
-python ../ImpossibleSDK/tools/app_build.py .
+python ../SDK/tools/app_build.py .
 ```
 
 The build runs the tests in `tests/` (Python `unittest`; they need Python 3.12 or newer, as the SDK build does). They run the programs directly on Windows or through WSL interop, and create their scratch folders under the build folder.
